@@ -1,0 +1,37 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\ServicioSocial\\versionC#\\CapturadeAlertasNacionales\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{D7E4C53B-5B3B-42CF-9DF4-5CF7F7B642E4}|CapturadeAlertasNacionales\\CapturadeAlertasNacionales.csproj|d:\\serviciosocial\\versionc#\\capturadealertasnacionales\\capturadealertasnacionales\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{D7E4C53B-5B3B-42CF-9DF4-5CF7F7B642E4}|CapturadeAlertasNacionales\\CapturadeAlertasNacionales.csproj|solutionrelative:capturadealertasnacionales\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 173,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "Program.cs",
+              "DocumentMoniker": "D:\\ServicioSocial\\versionC#\\CapturadeAlertasNacionales\\CapturadeAlertasNacionales\\Program.cs",
+              "RelativeDocumentMoniker": "CapturadeAlertasNacionales\\Program.cs",
+              "ToolTip": "D:\\ServicioSocial\\versionC#\\CapturadeAlertasNacionales\\CapturadeAlertasNacionales\\Program.cs",
+              "RelativeToolTip": "CapturadeAlertasNacionales\\Program.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-06-23T23:00:38.801Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
