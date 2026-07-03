@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Interfaz grafica para la captura de Alertas Nacionales.
 
-Para ejecutar:
-    python app.py
-
-Requisitos: los mismos del motor (pdfplumber, openpyxl). Tkinter ya viene
-incluido con Python, no se instala nada extra.
-"""
 
 import threading
 import queue
@@ -17,13 +9,11 @@ from pathlib import Path
 
 import capturar_alerta as motor
 
-# Paleta de colores simple y sobria
 COLOR_FONDO = "#f4f6f8"
 COLOR_TITULO = "#1f3a5f"
 COLOR_TEXTO_TENUE = "#5b6b7b"
 COLOR_INFO = "#2d6cdf"
 
-# Textos de ayuda de cada campo (los muestra el boton "?")
 AYUDAS = {
     "carpeta": (
         "Carpeta de PDFs",
@@ -35,47 +25,52 @@ AYUDAS = {
     ),
     "excel": (
         "Archivo de Excel",
-        "Selecciona el archivo de Excel donde se guardaran los registros "
-        "(tu base de datos).\n\n"
+        "Selecciona el archivo de Excel donde se guardaran los registros.\n\n"
         "Importante: cierra el archivo en Excel antes de procesar. Si esta "
         "abierto, el programa no podra guardar los cambios.\n\n"
         "El programa hace una copia de seguridad automatica antes de "
         "escribir."
     ),
-    "hoja": (
-        "Hoja del Excel",
-        "Elige la hoja (pestaña) del Excel donde van los registros.\n\n"
-        "La lista se llena sola al elegir el archivo de Excel. Solo abre el "
-        "menu y selecciona la hoja correcta.\n\n"
-        
+    "hojas": (
+        "Hojas donde registrar",
+        "Puedes registrar en una o en dos hojas al mismo tiempo.\n\n"
+        "Marca la casilla de cada hoja donde quieras que se guarden los "
+        "registros y elige, en su menu, cual es esa hoja.\n\n"
+        "  - Hoja completa: normalmente la que tiene TODAS las columnas.\n"
+        "  - Hoja personalizada: la que preparaste con solo las columnas "
+        "que te interesan.\n\n"
+        "El programa detecta las columnas por su encabezado, asi que cada "
+        "hoja recibe solo los datos de las columnas que tenga.\n\n"
+        "Debes marcar al menos una."
     ),
     "procesados": (
         "Carpeta de procesados",
-        "Carpeta donde se moveran los PDF despues de procesarlos, para no "
-        "mezclarlos con los nuevos.\n\n"
+        "Carpeta donde se moveran los PDF despues de procesarlos.\n\n"
         "Se ordenan asi:\n"
-        "  - Los agregados con exito: en esta carpeta.\n"
-        "  - Los duplicados: en una subcarpeta 'duplicados'.\n"
-        "  - Los que fallan: en una subcarpeta 'errores'.\n\n"
+        "  - Agregados con exito: en esta carpeta.\n"
+        "  - Duplicados: en una subcarpeta 'duplicados'.\n"
+        "  - Con error: en una subcarpeta 'errores'.\n\n"
         "Si la carpeta no existe, el programa la crea sola."
     ),
 }
 
 
 class AppCaptura:
-    """Ventana principal de la aplicacion."""
-
     def __init__(self, raiz):
         self.raiz = raiz
         raiz.title("Captura de Alertas Nacionales")
-        raiz.geometry("820x620")
-        raiz.minsize(720, 560)
+        raiz.geometry("840x680")
+        raiz.minsize(740, 620)
         raiz.configure(bg=COLOR_FONDO)
 
         self.var_carpeta = tk.StringVar()
         self.var_excel = tk.StringVar()
         self.var_procesados = tk.StringVar()
-        self.var_hoja = tk.StringVar()
+        # Hoja completa y personalizada: cada una con su activador y su nombre
+        self.var_usar_completa = tk.BooleanVar(value=True)
+        self.var_hoja_completa = tk.StringVar()
+        self.var_usar_personal = tk.BooleanVar(value=False)
+        self.var_hoja_personal = tk.StringVar()
 
         self.cola_logs = queue.Queue()
         self.procesando = False
@@ -85,39 +80,36 @@ class AppCaptura:
         self.raiz.after(100, self._vaciar_cola)
 
     def _configurar_estilos(self):
-        estilo = ttk.Style()
+        e = ttk.Style()
         try:
-            estilo.theme_use("clam")
+            e.theme_use("clam")
         except tk.TclError:
             pass
-        estilo.configure("TFrame", background=COLOR_FONDO)
-        estilo.configure("TLabel", background=COLOR_FONDO)
-        estilo.configure("Card.TFrame", background="white", relief="solid",
-                         borderwidth=1)
-        estilo.configure("Titulo.TLabel", background=COLOR_FONDO,
-                         foreground=COLOR_TITULO,
-                         font=("Segoe UI", 17, "bold"))
-        estilo.configure("Sub.TLabel", background=COLOR_FONDO,
-                         foreground=COLOR_TEXTO_TENUE, font=("Segoe UI", 10))
-        estilo.configure("Campo.TLabel", background="white",
-                         font=("Segoe UI", 10, "bold"))
-        estilo.configure("Procesar.TButton", font=("Segoe UI", 11, "bold"),
-                         padding=10)
-        estilo.configure("Paso.TLabel", background="white",
-                         foreground=COLOR_INFO, font=("Segoe UI", 11, "bold"))
+        e.configure("TFrame", background=COLOR_FONDO)
+        e.configure("TLabel", background=COLOR_FONDO)
+        e.configure("Card.TFrame", background="white")
+        e.configure("Titulo.TLabel", background=COLOR_FONDO,
+                    foreground=COLOR_TITULO, font=("Segoe UI", 17, "bold"))
+        e.configure("Sub.TLabel", background=COLOR_FONDO,
+                    foreground=COLOR_TEXTO_TENUE, font=("Segoe UI", 10))
+        e.configure("Campo.TLabel", background="white",
+                    font=("Segoe UI", 10, "bold"))
+        e.configure("Paso.TLabel", background="white",
+                    foreground=COLOR_INFO, font=("Segoe UI", 11, "bold"))
+        e.configure("Check.TCheckbutton", background="white",
+                    font=("Segoe UI", 10, "bold"))
+        e.configure("Procesar.TButton", font=("Segoe UI", 11, "bold"),
+                    padding=10)
 
     def _construir_interfaz(self):
         cont = ttk.Frame(self.raiz, padding=18)
         cont.pack(fill="both", expand=True)
 
-        # Encabezado
         ttk.Label(cont, text="Captura de Alertas Nacionales",
                   style="Titulo.TLabel").pack(anchor="w")
-        ttk.Label(cont,
-                  text="Completa los 4 pasos y presiona Procesar.",
+        ttk.Label(cont, text="Completa los pasos y presiona Procesar.",
                   style="Sub.TLabel").pack(anchor="w", pady=(2, 14))
 
-        # Tarjeta con los campos
         tarjeta = ttk.Frame(cont, style="Card.TFrame", padding=16)
         tarjeta.pack(fill="x")
 
@@ -127,22 +119,18 @@ class AppCaptura:
         self._fila(tarjeta, "2", "Archivo de Excel", self.var_excel,
                    self._elegir_excel, "excel")
         self._separador(tarjeta)
-        self._fila_hoja(tarjeta, "3", "Hoja del Excel", "hoja")
+        self._bloque_hojas(tarjeta, "3")
         self._separador(tarjeta)
         self._fila(tarjeta, "4", "Carpeta de procesados", self.var_procesados,
                    self._elegir_carpeta_procesados, "procesados")
 
-        # Boton procesar
-        self.boton = ttk.Button(cont, text="Procesar",
-                                style="Procesar.TButton",
+        self.boton = ttk.Button(cont, text="Procesar", style="Procesar.TButton",
                                 command=self._al_presionar_procesar)
         self.boton.pack(pady=16)
 
-        # Resultados
-        ttk.Label(cont, text="Resultados",
-                  style="Sub.TLabel").pack(anchor="w")
+        ttk.Label(cont, text="Resultados", style="Sub.TLabel").pack(anchor="w")
         self.caja_log = scrolledtext.ScrolledText(
-            cont, height=12, wrap="word", state="disabled",
+            cont, height=10, wrap="word", state="disabled",
             font=("Consolas", 9), relief="solid", borderwidth=1)
         self.caja_log.pack(fill="both", expand=True, pady=(4, 0))
 
@@ -150,45 +138,51 @@ class AppCaptura:
         ttk.Separator(padre, orient="horizontal").pack(fill="x", pady=8)
 
     def _fila(self, padre, num, etiqueta, variable, comando, clave_ayuda):
-        """Fila estandar: numero de paso, etiqueta, campo, info y boton."""
         fila = ttk.Frame(padre, style="Card.TFrame")
-        fila.configure(padding=0)
         fila.pack(fill="x")
-
-        # Encabezado de la fila: paso + etiqueta + info
         cab = ttk.Frame(fila, style="Card.TFrame")
         cab.pack(fill="x")
         ttk.Label(cab, text=f"Paso {num}", style="Paso.TLabel").pack(side="left")
         ttk.Label(cab, text="  " + etiqueta, style="Campo.TLabel").pack(side="left")
         self._boton_info(cab, clave_ayuda)
-
-        # Linea de entrada + boton elegir
         linea = ttk.Frame(fila, style="Card.TFrame")
         linea.pack(fill="x", pady=(4, 0))
         ttk.Entry(linea, textvariable=variable).pack(
             side="left", fill="x", expand=True, padx=(0, 8), ipady=3)
         ttk.Button(linea, text="Elegir...", command=comando).pack(side="left")
 
-    def _fila_hoja(self, padre, num, etiqueta, clave_ayuda):
-        """Fila especial: en vez de 'Elegir', un menu desplegable de hojas."""
+    def _bloque_hojas(self, padre, num):
+        """Paso 3: dos hojas activables, cada una con casilla + desplegable."""
         fila = ttk.Frame(padre, style="Card.TFrame")
         fila.pack(fill="x")
-
         cab = ttk.Frame(fila, style="Card.TFrame")
         cab.pack(fill="x")
         ttk.Label(cab, text=f"Paso {num}", style="Paso.TLabel").pack(side="left")
-        ttk.Label(cab, text="  " + etiqueta, style="Campo.TLabel").pack(side="left")
-        self._boton_info(cab, clave_ayuda)
+        ttk.Label(cab, text="  Hojas donde registrar",
+                  style="Campo.TLabel").pack(side="left")
+        self._boton_info(cab, "hojas")
 
-        linea = ttk.Frame(fila, style="Card.TFrame")
-        linea.pack(fill="x", pady=(4, 0))
-        self.combo_hoja = ttk.Combobox(
-            linea, textvariable=self.var_hoja, state="readonly")
-        self.combo_hoja.pack(side="left", fill="x", expand=True, ipady=2)
-        self.combo_hoja.set("(elige primero el Excel)")
+        # Fila hoja completa
+        f1 = ttk.Frame(fila, style="Card.TFrame")
+        f1.pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(f1, text="Hoja completa", style="Check.TCheckbutton",
+                        variable=self.var_usar_completa,
+                        command=self._actualizar_estado_combos).pack(side="left")
+        self.combo_completa = ttk.Combobox(
+            f1, textvariable=self.var_hoja_completa, state="disabled", width=30)
+        self.combo_completa.pack(side="left", padx=(10, 0), fill="x", expand=True)
+
+        # Fila hoja personalizada
+        f2 = ttk.Frame(fila, style="Card.TFrame")
+        f2.pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(f2, text="Hoja personalizada", style="Check.TCheckbutton",
+                        variable=self.var_usar_personal,
+                        command=self._actualizar_estado_combos).pack(side="left")
+        self.combo_personal = ttk.Combobox(
+            f2, textvariable=self.var_hoja_personal, state="disabled", width=30)
+        self.combo_personal.pack(side="left", padx=(10, 0), fill="x", expand=True)
 
     def _boton_info(self, padre, clave_ayuda):
-        """Pequeño boton circular '?' que abre una ventanita con ayuda."""
         b = tk.Label(padre, text=" ? ", fg="white", bg=COLOR_INFO,
                      font=("Segoe UI", 9, "bold"), cursor="hand2")
         b.pack(side="left", padx=8)
@@ -197,6 +191,13 @@ class AppCaptura:
     def _mostrar_ayuda(self, clave):
         titulo, texto = AYUDAS[clave]
         messagebox.showinfo(titulo, texto)
+
+    def _actualizar_estado_combos(self):
+        """Habilita el desplegable de cada hoja solo si su casilla esta marcada."""
+        self.combo_completa.configure(
+            state="readonly" if self.var_usar_completa.get() else "disabled")
+        self.combo_personal.configure(
+            state="readonly" if self.var_usar_personal.get() else "disabled")
 
     # ---------- Acciones ----------
     def _elegir_carpeta_pdfs(self):
@@ -216,14 +217,22 @@ class AppCaptura:
             self._cargar_hojas(ruta)
 
     def _cargar_hojas(self, ruta_excel):
-        """Llena el desplegable de hojas leyendo el Excel elegido."""
         hojas = motor.listar_hojas(ruta_excel)
         if hojas:
-            self.combo_hoja.configure(values=hojas)
-            self.var_hoja.set(hojas[0])  # selecciona la primera por defecto
+            self.combo_completa.configure(values=hojas)
+            self.combo_personal.configure(values=hojas)
+            # Sugerencias sensatas: completa = primera; personalizada = segunda
+            self.var_hoja_completa.set(hojas[0])
+            if len(hojas) > 1:
+                self.var_hoja_personal.set(hojas[1])
+            else:
+                self.var_hoja_personal.set(hojas[0])
+            self._actualizar_estado_combos()
         else:
-            self.combo_hoja.configure(values=[])
-            self.combo_hoja.set("(no se pudieron leer las hojas)")
+            for combo in (self.combo_completa, self.combo_personal):
+                combo.configure(values=[])
+            self.var_hoja_completa.set("")
+            self.var_hoja_personal.set("")
 
     def _elegir_carpeta_procesados(self):
         ruta = filedialog.askdirectory(title="Carpeta para PDF procesados")
@@ -238,17 +247,11 @@ class AppCaptura:
         carpeta = self.var_carpeta.get().strip()
         excel = self.var_excel.get().strip()
         procesados = self.var_procesados.get().strip()
-        hoja = self.var_hoja.get().strip()
 
         if not carpeta or not excel or not procesados:
             messagebox.showwarning(
                 "Faltan datos",
                 "Completa las rutas de los pasos 1, 2 y 4 antes de procesar.")
-            return
-        if not hoja or hoja.startswith("("):
-            messagebox.showwarning(
-                "Falta la hoja",
-                "Elige primero el Excel (paso 2) y luego la hoja (paso 3).")
             return
         if not Path(carpeta).is_dir():
             messagebox.showerror("Carpeta no valida",
@@ -257,6 +260,24 @@ class AppCaptura:
         if not Path(excel).is_file():
             messagebox.showerror("Excel no valido",
                                  f"No encuentro el archivo Excel:\n{excel}")
+            return
+
+        # Reunir las hojas activas (sin repetir)
+        hojas = []
+        if self.var_usar_completa.get():
+            h = self.var_hoja_completa.get().strip()
+            if h:
+                hojas.append(h)
+        if self.var_usar_personal.get():
+            h = self.var_hoja_personal.get().strip()
+            if h and h not in hojas:
+                hojas.append(h)
+
+        if not hojas:
+            messagebox.showwarning(
+                "Falta elegir hoja",
+                "Marca al menos una hoja (completa o personalizada) y "
+                "eligela en su menu.")
             return
 
         self.caja_log.configure(state="normal")
@@ -268,15 +289,15 @@ class AppCaptura:
 
         hilo = threading.Thread(
             target=self._trabajo_en_segundo_plano,
-            args=(carpeta, excel, procesados, hoja),
+            args=(carpeta, excel, procesados, hojas),
             daemon=True)
         hilo.start()
 
-    def _trabajo_en_segundo_plano(self, carpeta, excel, procesados, hoja):
+    def _trabajo_en_segundo_plano(self, carpeta, excel, procesados, hojas):
         try:
             resumen = motor.procesar_carpeta(
                 carpeta, excel, procesados,
-                hoja=hoja, log=self._log_desde_hilo)
+                hojas=hojas, log=self._log_desde_hilo)
             self.cola_logs.put(("RESUMEN", resumen))
         except Exception as e:
             self.cola_logs.put(("LOG", f"ERROR inesperado: {e}"))

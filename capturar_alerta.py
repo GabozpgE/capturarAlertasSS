@@ -1,13 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-
-Uso:
-    python capturar_alerta.py "ruta/al/flyer.pdf"
-    python capturar_alerta.py "ruta/al/flyer.pdf" --excel "ruta/al/base.xlsx"
-
-Requisitos:
-    pip install pdfplumber openpyxl
-"""
 
 import re
 import sys
@@ -24,26 +15,8 @@ from copy import copy
 EXCEL_DEFAULT = "BASE ALERTAS NACIONAL 2026 (JOAO).xlsx"
 HOJA_DEFAULT = "Hoja1"          # se usa solo si no se especifica otra
 ANIO_EXPEDIENTE = 2026          # ano que va en AN/{id}/{anio}
-COL_ID = 1                       # columna A
 PRIMERA_FILA_DATOS = 2           # los datos empiezan en la fila 2
 
-# Mapa de columnas (numero de columna en el Excel)
-COLS = {
-    "expediente": 2,    # B
-    "fecha_registro": 3,  # C
-    "nombre": 4,        # D
-    "edad_desaparecer": 5,  # E
-    "edad_actual": 6,   # F
-    "sexo": 7,          # G
-    "genero": 8,        # H
-    "nacionalidad": 9,  # I
-    "fub": 10,          # J
-    "fecha_hecho": 11,  # K
-    "fecha_percato": 12,  # L
-    "lugar_hechos": 13,  # M
-    "autoridad": 14,    # N
-}
-# -------------------------------------------------
 
 
 class ErrorPDF(Exception):
@@ -123,6 +96,135 @@ def normalizar_lugar(lugar_raw: str) -> str:
     return lugar_raw.strip().upper()
 
 
+def _normalizar_encabezado(texto) -> str:
+    """
+    Normaliza un texto de encabezado para poder compararlo sin importar
+    acentos, mayusculas, saltos de linea ni signos.
+    'FECHA \\nDE HECHO' y 'fecha de hecho' quedan iguales.
+    'Características físicas' y 'CARACTERISTICAS FISICAS' quedan iguales.
+    """
+    if texto is None:
+        return ""
+    t = str(texto)
+    # quitar acentos
+    t = unicodedata.normalize("NFD", t)
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    # a minusculas, quitar signos, colapsar espacios
+    t = t.lower()
+    t = re.sub(r"[^a-z0-9ñ ]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+# Para cada dato interno, la lista de encabezados posibles (como aparecen
+# en el Excel). El programa busca cualquiera de estos nombres en la fila 1.
+# Asi, si un dia se reordenan o renombran ligeramente las columnas, sigue
+# funcionando mientras el encabezado sea reconocible.
+MAPA_ENCABEZADOS = {
+    "expediente":            ["expediente"],
+    "fecha_registro":        ["fecha de registro"],
+    "nombre":                ["nombre"],
+    "edad_desaparecer":      ["edad al desaparecer",
+                              "edad al momento de la desaparicion"],
+    "edad_actual":           ["edad actual"],
+    "sexo":                  ["sexo"],
+    "genero":                ["genero"],
+    "nacionalidad":          ["nacionalidad"],
+    "fub":                   ["fub", "folio unico de identificacion"],
+    "fecha_hecho":           ["fecha de hecho", "fecha de hechos"],
+    "hora_hecho":            ["hora de hecho", "hora de hechos"],
+    "fecha_percato":         ["fecha de percato"],
+    "hora_percato":          ["hora de percato"],
+    "lugar_hechos":          ["lugar de hechos", "lugar de los hechos"],
+    "municipio":             ["municipio"],
+    "lugar_nacimiento":      ["lugar de nacimiento"],
+    "habla_espanol":         ["habla espanol"],
+    "lengua_indigena":       ["idioma o lengua indigena", "lengua indigena"],
+    "discapacidad":          ["discapacidad"],
+    "carpeta_investigacion": ["carpeta de investigacion"],
+    "caracteristicas_fisicas": ["caracteristicas fisicas"],
+    "senas_particulares":    ["senas particulares"],
+    "prendas_vestir":        ["prendas de vestir"],
+    "autoridad":             ["autoridad que ingreso el reporte",
+                              "autoridades competentes", "autoridad"],
+    # 'id' no se mapea: se respeta el que ya viene en la columna A.
+}
+
+
+def mapear_columnas(ws) -> dict:
+    """
+    Lee la fila 1 (encabezados) y devuelve un diccionario que dice, para
+    cada dato interno, en que numero de columna esta.
+    Ejemplo: {'nombre': 4, 'fub': 10, 'municipio': 16, ...}
+
+    Si un encabezado no aparece en la hoja, ese dato simplemente no se
+    escribe (la hoja quiza no tiene esa columna).
+    """
+    # Normalizar todos los encabezados de la fila 1
+    encabezados = {}
+    for col in range(1, ws.max_column + 1):
+        norm = _normalizar_encabezado(ws.cell(row=1, column=col).value)
+        if norm:
+            encabezados[norm] = col
+
+    mapa = {}
+    for dato, posibles in MAPA_ENCABEZADOS.items():
+        for nombre in posibles:
+            clave = _normalizar_encabezado(nombre)
+            if clave in encabezados:
+                mapa[dato] = encabezados[clave]
+                break
+    return mapa
+
+
+def buscar_columna_id(ws):
+    """Devuelve el numero de columna donde esta el encabezado 'ID'."""
+    for col in range(1, ws.max_column + 1):
+        if _normalizar_encabezado(ws.cell(row=1, column=col).value) == "id":
+            return col
+    return 1  # por defecto la A
+
+
+def extraer_estado_municipio(lugar_raw: str):
+    """
+    Del PDF 'ESTADO: SONORA , MUNICIPIO: HERMOSILLO' devuelve una tupla
+    (estado, municipio). Si no encuentra el municipio, devuelve cadena vacia.
+    """
+    estado = ""
+    municipio = ""
+    m_est = re.search(r"ESTADO:\s*(.+?)\s*,\s*MUNICIPIO", lugar_raw, re.IGNORECASE)
+    if m_est:
+        estado = m_est.group(1).strip().upper()
+    else:
+        estado = lugar_raw.strip().upper()
+    m_mun = re.search(r"MUNICIPIO:\s*(.+)$", lugar_raw, re.IGNORECASE)
+    if m_mun:
+        municipio = m_mun.group(1).strip().upper()
+    return estado, municipio
+
+
+def extraer_bloque_datos(texto: str, etiqueta_ini: str, etiqueta_fin: str) -> str:
+    """
+    Extrae un bloque de la seccion DATOS (caracteristicas fisicas, señas
+    particulares, prendas de vestir) como un texto completo.
+
+    El texto de estos bloques puede venir partido en varias lineas y con la
+    etiqueta intercalada, asi que capturamos todo entre la etiqueta inicial
+    y la siguiente etiqueta, y limpiamos saltos de linea.
+    """
+    patron = (re.escape(etiqueta_ini) + r"\s*(.*?)\s*" +
+              r"(?=" + etiqueta_fin + r")")
+    m = re.search(patron, texto, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return ""
+    bloque = m.group(1)
+    # Unir lineas y quitar la propia etiqueta si quedo intercalada
+    bloque = re.sub(r"\s*\n\s*", " ", bloque)
+    bloque = re.sub(re.escape(etiqueta_ini), " ", bloque, flags=re.IGNORECASE)
+    bloque = re.sub(r"\s+", " ", bloque).strip()
+    return bloque
+
+
 def extraer_datos(texto: str) -> dict:
     """Extrae cada campo del flyer usando las etiquetas como anclas."""
     d = {}
@@ -157,10 +259,46 @@ def extraer_datos(texto: str) -> dict:
     d["fecha_percato"] = fecha_a_objeto(fp)
 
     lugar = buscar(r"Lugar de los hechos:\s*(.+?)\s*(?:Carpeta|\n)", texto)
-    d["lugar_hechos"] = normalizar_lugar(lugar)
+    estado, municipio = extraer_estado_municipio(lugar)
+    d["lugar_hechos"] = estado
+    d["municipio"] = municipio
 
     aut = buscar(r"Autoridades Competentes:\s*(.+?)\s*(?:Si tienes|\n)", texto)
     d["autoridad"] = aut.upper()
+
+    # ---------- Campos nuevos (Sprint 1) ----------
+    d["lugar_nacimiento"] = buscar(
+        r"Lugar de nacimiento:\s*(.+?)\s*(?:Sexo:|\n)", texto)
+    d["habla_espanol"] = buscar(
+        r"¿Habla español\?:\s*(.+?)\s*(?:Idioma|\n)", texto)
+    d["lengua_indigena"] = buscar(
+        r"Idioma o lengua ind[ií]gena:\s*(.+?)\s*(?:Discapacidad|\n)", texto)
+    d["discapacidad"] = buscar(
+        r"Discapacidad:\s*(.+?)\s*(?:Fecha|\n)", texto)
+    d["hora_hecho"] = buscar(r"Hora de hechos:\s*([\d:]+)", texto)
+    d["hora_percato"] = buscar(r"Hora de percato:\s*([\d:]+)", texto)
+    d["carpeta_investigacion"] = buscar(
+        r"Carpeta de investigaci[oó]n\s*(.+?)\s*(?:DATOS|\n)", texto)
+
+    # Caracteristicas fisicas: en el PDF la etiqueta puede aparecer EN MEDIO
+    # del texto (parte antes y parte despues). Por eso tomamos todo lo que
+    # hay entre 'DATOS' y 'Señas particulares:', y quitamos la etiqueta.
+    m_cf = re.search(
+        r"DATOS\s*(.*?)\s*Señas particulares:",
+        texto, re.IGNORECASE | re.DOTALL)
+    if m_cf:
+        cf = m_cf.group(1)
+        cf = re.sub(r"Características f[ií]sicas:", " ", cf, flags=re.IGNORECASE)
+        cf = re.sub(r"\s*\n\s*", " ", cf)
+        cf = re.sub(r"\s+", " ", cf).strip()
+        d["caracteristicas_fisicas"] = cf
+    else:
+        d["caracteristicas_fisicas"] = ""
+
+    d["senas_particulares"] = extraer_bloque_datos(
+        texto, "Señas particulares:", r"Prendas de vestir:")
+    d["prendas_vestir"] = extraer_bloque_datos(
+        texto, "Prendas de vestir:", r"Autoridades Competentes:")
 
     return d
 
@@ -203,6 +341,27 @@ def quitar_acentos(texto: str) -> str:
             .replace("\x02", "Ü").replace("\x03", "ü"))
 
 
+def limpiar_suave_sql(texto: str) -> str:
+    """
+    Limpieza SUAVE para campos descriptivos largos (caracteristicas fisicas,
+    señas particulares, prendas de vestir).
+
+    A diferencia de limpiar_para_sql (estricta), aqui SI conservamos comas,
+    dos puntos, acentos y demas puntuacion, porque en una oracion completa
+    esos signos dan contexto y no se deben perder.
+
+    Solo neutralizamos lo que puede causar problemas al insertar en SQL:
+      - la comilla simple  '   (delimita cadenas en SQL)
+      - el punto y coma     ;  (separa instrucciones en SQL)
+    Ambos se reemplazan de forma segura. Tambien colapsa espacios.
+    """
+    if not isinstance(texto, str):
+        return texto
+    limpio = texto.replace("'", " ").replace(";", ",")
+    limpio = re.sub(r"\s+", " ", limpio).strip()
+    return limpio
+
+
 def limpiar_para_sql(texto: str) -> str:
     """
     Deja solo caracteres compatibles con la base de datos destino:
@@ -225,34 +384,46 @@ def limpiar_para_sql(texto: str) -> str:
 
 def a_mayusculas(datos: dict) -> dict:
     """
-    Limpia los campos de texto para que sean aptos para Excel y SQL:
-      1) mayusculas
-      2) sin acentos (conservando Ñ)
-      3) sin caracteres extraños (solo letras, numeros, espacio, - y /)
-    No toca las fechas ya formateadas.
+    Limpia los campos de texto para que sean aptos para Excel y SQL.
+
+    Dos tratamientos distintos:
+    - Campos descriptivos largos (caracteristicas fisicas, señas, prendas):
+      limpieza SUAVE. Se conservan comas, acentos y puntuacion para no
+      perder contexto; solo se neutraliza lo peligroso para SQL. Se
+      escriben en MAYUSCULAS pero CON acentos.
+    - Todos los demas campos de texto: limpieza ESTRICTA (mayusculas, sin
+      acentos salvo Ñ, solo letras/numeros/espacio/-//).
+
+    No toca las fechas (son objetos date).
     """
     no_tocar = {"fecha_hecho", "fecha_percato"}
+    descriptivos = {"caracteristicas_fisicas", "senas_particulares",
+                    "prendas_vestir"}
+    horas = {"hora_hecho", "hora_percato"}
     salida = {}
     for k, v in datos.items():
-        if isinstance(v, str) and k not in no_tocar:
-            salida[k] = limpiar_para_sql(quitar_acentos(v.upper()))
-        else:
+        if not isinstance(v, str) or k in no_tocar:
             salida[k] = v
+        elif k in horas:
+            salida[k] = v.strip()  # dejar HH:MM intacto
+        elif k in descriptivos:
+            salida[k] = limpiar_suave_sql(v.upper())
+        else:
+            salida[k] = limpiar_para_sql(quitar_acentos(v.upper()))
     return salida
 
 
-def fila_para_nuevo_registro(ws):
+def fila_para_nuevo_registro(ws, col_nombre):
     """
     Encuentra la fila donde escribir el nuevo registro.
 
     Importante: en este Excel las columnas ID y EXPEDIENTE ya vienen
     pre-llenadas hasta muchas filas adelante, aunque la fila este vacia.
     Por eso NO podemos guiarnos por el ID. El indicador de un registro
-    real es que la columna NOMBRE (D) tenga texto.
+    real es que la columna NOMBRE tenga texto.
 
     Devuelve la primera fila cuyo NOMBRE este vacio (= primer hueco real).
     """
-    col_nombre = COLS["nombre"]
     fila = PRIMERA_FILA_DATOS
     while True:
         val = ws.cell(row=fila, column=col_nombre).value
@@ -261,20 +432,25 @@ def fila_para_nuevo_registro(ws):
         fila += 1
 
 
-def escribir_fila(ws, datos: dict):
+def escribir_fila(ws, datos: dict, mapa: dict):
     """
     Escribe un registro en la primera fila sin NOMBRE de un worksheet
-    YA ABIERTO. No guarda el archivo (eso lo hace quien llama, una sola
-    vez al final, lo cual es mas rapido y seguro al procesar varios PDFs).
+    YA ABIERTO, usando 'mapa' (dato -> numero de columna) que se obtuvo
+    leyendo los encabezados de la fila 1. Asi el orden de las columnas
+    puede cambiar sin romper nada.
+
+    No guarda el archivo (lo hace quien llama, una sola vez al final).
     Devuelve (nuevo_id, fila, valores).
     """
-    fila = fila_para_nuevo_registro(ws)
+    col_id = buscar_columna_id(ws)
+    col_nombre = mapa.get("nombre")
+    if col_nombre is None:
+        raise ErrorPDF("la hoja no tiene una columna 'NOMBRE'")
+
+    fila = fila_para_nuevo_registro(ws, col_nombre)
     fila_modelo = fila - 1
 
     # --- Copiar el formato de la fila anterior a la fila nueva ---
-    # openpyxl no hereda estilos en celdas vacias, asi que clonamos
-    # el formato (fuente, color, bordes, relleno, alineacion, formato
-    # de numero) de la fila de arriba que ya tiene el estilo correcto.
     if fila_modelo >= PRIMERA_FILA_DATOS:
         for col in range(1, ws.max_column + 1):
             origen = ws.cell(row=fila_modelo, column=col)
@@ -289,67 +465,60 @@ def escribir_fila(ws, datos: dict):
         if fila_modelo in ws.row_dimensions and ws.row_dimensions[fila_modelo].height:
             ws.row_dimensions[fila].height = ws.row_dimensions[fila_modelo].height
 
-    # El ID ya viene pre-llenado en la columna A. Lo respetamos.
-    # Si por algun motivo estuviera vacio, lo calculamos a partir del de arriba.
-    id_actual = ws.cell(row=fila, column=COL_ID).value
+    # El ID ya viene pre-llenado. Lo respetamos; si esta vacio, lo calculamos.
+    id_actual = ws.cell(row=fila, column=col_id).value
     if id_actual is None or str(id_actual).strip() == "":
-        id_arriba = ws.cell(row=fila_modelo, column=COL_ID).value
+        id_arriba = ws.cell(row=fila_modelo, column=col_id).value
         nuevo_id = int(id_arriba) + 1 if id_arriba not in (None, "") else 1
-        ws.cell(row=fila, column=COL_ID, value=nuevo_id)
+        ws.cell(row=fila, column=col_id, value=nuevo_id)
     else:
         nuevo_id = int(id_actual)
 
-    # El EXPEDIENTE tambien suele venir pre-llenado. Solo lo ponemos
-    # si esta vacio, para no pisar lo que ya tiene el Excel.
-    exp_actual = ws.cell(row=fila, column=COLS["expediente"]).value
-    if exp_actual is None or str(exp_actual).strip() == "":
-        ws.cell(row=fila, column=COLS["expediente"],
-                value=f"AN/{nuevo_id}/{ANIO_EXPEDIENTE}")
-    expediente = ws.cell(row=fila, column=COLS["expediente"]).value
+    # El EXPEDIENTE suele venir pre-llenado. Solo lo ponemos si esta vacio.
+    col_exp = mapa.get("expediente")
+    expediente = ""
+    if col_exp:
+        exp_actual = ws.cell(row=fila, column=col_exp).value
+        if exp_actual is None or str(exp_actual).strip() == "":
+            ws.cell(row=fila, column=col_exp,
+                    value=f"AN/{nuevo_id}/{ANIO_EXPEDIENTE}")
+        expediente = ws.cell(row=fila, column=col_exp).value
 
-    # Fecha de registro = hoy, como fecha real (no texto) para que la
-    # celda con formato DD-MM-AA la muestre bien sin triangulo verde.
-    fecha_registro = dt.date.today()
+    # Todos los valores a escribir. La fecha de registro es hoy.
+    valores = dict(datos)  # copia de lo extraido del PDF
+    valores["fecha_registro"] = dt.date.today()
+    valores["expediente"] = expediente
 
-    valores = {
-        "expediente": expediente,
-        "fecha_registro": fecha_registro,
-        "nombre": datos["nombre"],
-        "edad_desaparecer": datos["edad_desaparecer"],
-        "edad_actual": datos["edad_actual"],
-        "sexo": datos["sexo"],
-        "genero": datos["genero"],
-        "nacionalidad": datos["nacionalidad"],
-        "fub": datos["fub"],
-        "fecha_hecho": datos["fecha_hecho"],
-        "fecha_percato": datos["fecha_percato"],
-        "lugar_hechos": datos["lugar_hechos"],
-        "autoridad": datos["autoridad"],
-    }
+    numericos = {"edad_desaparecer", "edad_actual"}
 
-    for clave, col in COLS.items():
-        valor = valores[clave]
-        # Las edades deben quedar como NUMERO, no como texto,
-        # para que Excel no marque el triangulo verde.
-        if clave in ("edad_desaparecer", "edad_actual"):
+    # Escribir cada dato en SU columna segun el mapa (por nombre).
+    # Si la hoja no tiene ese encabezado, simplemente se omite ese dato.
+    for dato, col in mapa.items():
+        if dato in ("nombre",):
+            valor = valores.get("nombre")
+        else:
+            valor = valores.get(dato)
+        if valor is None:
+            continue
+        if dato in numericos:
             try:
                 valor = int(valor)
             except (ValueError, TypeError):
-                pass  # si por algo no es numero, lo deja como viene
+                pass
         ws.cell(row=fila, column=col, value=valor)
 
     return nuevo_id, fila, valores
 
 
-def leer_fubs_existentes(ws) -> set:
+def leer_fubs_existentes(ws, col_fub, col_nombre) -> set:
     """
-    Lee todos los FUB que ya estan registrados (columna J) y los devuelve
-    en un conjunto normalizado (mayusculas, sin espacios) para comparar.
+    Lee todos los FUB que ya estan registrados y los devuelve en un
+    conjunto normalizado (mayusculas, sin espacios) para comparar.
     Sirve para detectar duplicados.
     """
-    col_fub = COLS["fub"]
-    col_nombre = COLS["nombre"]
     fubs = set()
+    if col_fub is None or col_nombre is None:
+        return fubs
     fila = PRIMERA_FILA_DATOS
     while True:
         nombre = ws.cell(row=fila, column=col_nombre).value
@@ -378,25 +547,41 @@ def listar_hojas(ruta_excel) -> list:
 
 
 def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
-                     hoja=None, log=print):
+                     hoja=None, hojas=None, log=print):
     """
-    Procesa todos los PDF de 'carpeta_pdfs':
-      - extrae y valida datos de cada uno
-      - los nuevos se escriben en el Excel y el PDF se mueve a 'procesados'
-      - los duplicados (FUB ya registrado) se mueven a 'procesados/duplicados'
-      - los que fallan se mueven a 'procesados/errores'
-      - las subcarpetas 'duplicados' y 'errores' se crean SOLO si hace falta
+    Procesa todos los PDF de 'carpeta_pdfs' y los registra en UNA o VARIAS
+    hojas del Excel en una sola pasada.
 
-    'log' es una funcion para reportar el avance.
+    Parametros de hoja (usar uno):
+      - hojas: lista de nombres de hoja donde registrar (ej. ['Hoja1','Hoja2'])
+      - hoja:  un solo nombre (compatibilidad con la version anterior)
 
-    Devuelve un resumen: dict con listas 'agregados', 'duplicados', y
-    'errores' (esta ultima con tuplas (nombre_pdf, motivo)).
+    Comportamiento:
+      - Cada PDF se lee UNA sola vez.
+      - Se escribe en cada hoja activa donde su FUB no exista todavia
+        (duplicados independientes POR HOJA).
+      - El PDF se mueve UNA vez segun el resultado global:
+          * a 'procesados'  si se agrego al menos en una hoja
+          * a 'duplicados'  si ya existia en todas las hojas activas
+          * a 'errores'     si fallo la lectura/validacion
+      - Las subcarpetas 'duplicados'/'errores' se crean solo si hacen falta.
+
+    Devuelve un resumen: dict con 'agregados', 'duplicados' y 'errores'
+    (esta ultima con tuplas (nombre_pdf, motivo)).
     """
     carpeta_pdfs = Path(carpeta_pdfs)
     ruta_excel = Path(ruta_excel)
     carpeta_procesados = Path(carpeta_procesados)
 
     resumen = {"agregados": [], "duplicados": [], "errores": []}
+
+    # Normalizar la lista de hojas a usar
+    if hojas is None:
+        hojas = [hoja if hoja else HOJA_DEFAULT]
+    hojas = [h for h in hojas if h]  # quitar vacios
+    if not hojas:
+        log("ERROR: no se indico ninguna hoja donde registrar.")
+        return resumen
 
     # --- Validaciones basicas de entrada ---
     if not carpeta_pdfs.is_dir():
@@ -431,69 +616,83 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         log(f"ERROR: no se pudo abrir el Excel ({type(e).__name__}: {e}).")
         return resumen
 
-    # --- Determinar la hoja a usar ---
-    hoja_usar = hoja if hoja else HOJA_DEFAULT
+    # --- Preparar cada hoja: verificar existencia, mapa y FUBs ---
+    # 'destinos' sera una lista de diccionarios, uno por hoja activa.
+    destinos = []
+    for nombre_hoja in hojas:
+        if nombre_hoja not in wb.sheetnames:
+            log(f"ERROR: el Excel no tiene la hoja '{nombre_hoja}'. "
+                f"Hojas disponibles: {', '.join(wb.sheetnames)}.")
+            return resumen
+        ws = wb[nombre_hoja]
+        mapa = mapear_columnas(ws)
+        if "nombre" not in mapa:
+            log(f"ERROR: la hoja '{nombre_hoja}' no tiene columna 'NOMBRE'. "
+                "No se puede saber donde escribir.")
+            return resumen
+        fubs = leer_fubs_existentes(ws, mapa.get("fub"), mapa.get("nombre"))
+        destinos.append({
+            "nombre": nombre_hoja, "ws": ws, "mapa": mapa, "fubs": fubs,
+        })
+        log(f"Hoja '{nombre_hoja}': {len(fubs)} FUB unicos ya registrados.")
 
-    # --- Verificar que exista la hoja indicada ---
-    if hoja_usar not in wb.sheetnames:
-        log(f"ERROR: el Excel no tiene la hoja '{hoja_usar}'. "
-            f"Hojas disponibles: {', '.join(wb.sheetnames)}.")
-        return resumen
-    ws = wb[hoja_usar]
-
-    # --- Asegurar la carpeta de procesados (la principal si se crea) ---
+    # --- Asegurar la carpeta de procesados ---
     try:
         carpeta_procesados.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         log(f"ERROR: no se pudo crear la carpeta de procesados ({e}).")
         return resumen
 
-    # Subcarpetas para duplicados y errores. NO se crean todavia:
-    # solo cuando aparezca el primer duplicado / primer error.
     carpeta_duplicados = carpeta_procesados / "duplicados"
     carpeta_errores = carpeta_procesados / "errores"
 
-    # FUBs ya existentes + los que agreguemos en esta tanda
-    fubs_vistos = leer_fubs_existentes(ws)
-    log(f"Registros existentes detectados: {len(fubs_vistos)} FUB unicos.")
     log("-" * 50)
-
     hubo_cambios = False
 
     for pdf in pdfs:
         try:
             texto = leer_texto_pdf(str(pdf))
             datos = a_mayusculas(extraer_datos(texto))
-            validar_datos(datos)  # lanza ErrorPDF si faltan nombre o FUB
-
+            validar_datos(datos)
             fub = (datos.get("fub") or "").strip().upper()
 
-            # Duplicado -> subcarpeta 'duplicados'
-            if fub in fubs_vistos:
-                log(f"  [=] {pdf.name}: duplicado (FUB ya registrado). Se omite.")
+            agregado_en = []   # hojas donde se escribio
+            duplicado_en = []  # hojas donde ya existia
+
+            for d in destinos:
+                if fub in d["fubs"]:
+                    duplicado_en.append(d["nombre"])
+                else:
+                    nuevo_id, fila, _ = escribir_fila(d["ws"], datos, d["mapa"])
+                    d["fubs"].add(fub)
+                    agregado_en.append((d["nombre"], nuevo_id, fila))
+                    hubo_cambios = True
+
+            # Reportar y decidir a donde mover el PDF
+            if agregado_en:
+                detalle = ", ".join(f"{h} (ID {i}, fila {f})"
+                                    for h, i, f in agregado_en)
+                extra = ""
+                if duplicado_en:
+                    extra = f"  [ya existia en: {', '.join(duplicado_en)}]"
+                log(f"  [+] {pdf.name}: agregado en {detalle}.{extra}")
+                resumen["agregados"].append(pdf.name)
+                _mover(pdf, carpeta_procesados, log)
+            else:
+                # No se agrego en ninguna: era duplicado en todas
+                log(f"  [=] {pdf.name}: duplicado en todas las hojas "
+                    f"({', '.join(duplicado_en)}). Se omite.")
                 resumen["duplicados"].append(pdf.name)
                 _asegurar_carpeta(carpeta_duplicados)
                 _mover(pdf, carpeta_duplicados, log)
-                continue
-
-            # Nuevo -> escribir y mover a 'procesados'
-            nuevo_id, fila, _ = escribir_fila(ws, datos)
-            fubs_vistos.add(fub)
-            hubo_cambios = True
-            log(f"  [+] {pdf.name}: agregado. ID {nuevo_id}, fila {fila} "
-                f"({datos.get('nombre','')}).")
-            resumen["agregados"].append(pdf.name)
-            _mover(pdf, carpeta_procesados, log)
 
         except ErrorPDF as e:
-            # Error "esperado" con mensaje claro -> subcarpeta 'errores'
             log(f"  [x] {pdf.name}: ERROR -> {e}")
             resumen["errores"].append((pdf.name, str(e)))
             _asegurar_carpeta(carpeta_errores)
             _mover(pdf, carpeta_errores, log)
 
         except Exception as e:
-            # Error inesperado -> tambien a 'errores', con el tipo de error
             motivo = f"error inesperado ({type(e).__name__}: {e})"
             log(f"  [x] {pdf.name}: {motivo}")
             resumen["errores"].append((pdf.name, motivo))
@@ -519,7 +718,6 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         f"Duplicados: {len(resumen['duplicados'])} | "
         f"Con error: {len(resumen['errores'])}.")
 
-    # Detalle de los que fallaron, para revisarlos a mano
     if resumen["errores"]:
         log("")
         log("Archivos que NO se pudieron procesar:")
@@ -612,6 +810,7 @@ def main():
               f"Hojas disponibles: {', '.join(wb.sheetnames)}.")
         sys.exit(1)
     ws = wb[hoja_cli]
+    mapa = mapear_columnas(ws)
 
     try:
         texto = leer_texto_pdf(ruta_pdf)
@@ -623,11 +822,11 @@ def main():
 
     # Aviso de duplicado tambien en modo un PDF
     fub = (datos.get("fub") or "").strip().upper()
-    if fub and fub in leer_fubs_existentes(ws):
+    if fub and fub in leer_fubs_existentes(ws, mapa.get("fub"), mapa.get("nombre")):
         print(f"\n[=] Duplicado: el FUB {fub} ya esta registrado. No se agrega.")
         return
 
-    nuevo_id, fila, valores = escribir_fila(ws, datos)
+    nuevo_id, fila, valores = escribir_fila(ws, datos, mapa)
     wb.save(ruta_excel)
 
     print(f"\nRegistro agregado. ID {nuevo_id} en la fila {fila}.")
