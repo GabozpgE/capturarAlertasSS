@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
+"""
+Interfaz grafica para la captura de Alertas Nacionales.
 
+Solo recoge rutas y opciones y las pasa al motor (capturar_alerta.py).
+
+Para ejecutar:
+    python app.py
+"""
 
 import threading
 import queue
@@ -8,6 +15,8 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from pathlib import Path
 
 import capturar_alerta as motor
+import config_campos as cfg
+from ventana_config import VentanaConfig
 
 COLOR_FONDO = "#f4f6f8"
 COLOR_TITULO = "#1f3a5f"
@@ -75,9 +84,31 @@ class AppCaptura:
         self.cola_logs = queue.Queue()
         self.procesando = False
 
+        # Cargar la configuracion de campos. Detectamos si se acaba de crear
+        # (no existia) para mostrar el modal de bienvenida una sola vez.
+        self._config_recien_creada = False
+        self.config = cfg.cargar_configuracion(log=self._marcar_config_creada)
+
         self._configurar_estilos()
         self._construir_interfaz()
         self.raiz.after(100, self._vaciar_cola)
+        # Mostrar bienvenida despues de que la ventana este lista
+        if self._config_recien_creada:
+            self.raiz.after(400, self._mostrar_bienvenida)
+
+    def _marcar_config_creada(self, mensaje):
+        """El cargador avisa por 'log'; si creo config nueva, lo recordamos."""
+        if "creo una por defecto" in mensaje or "regenero" in mensaje:
+            self._config_recien_creada = True
+
+    def _mostrar_bienvenida(self):
+        messagebox.showinfo(
+            "Bienvenido",
+            "Se creo una configuracion de campos por defecto.\n\n"
+            "El programa ya esta listo para usarse. Si algun dia cambia el "
+            "formato del PDF o los nombres de las columnas del Excel, puedes "
+            "ajustar los campos con el boton 'Configurar campos', sin ayuda "
+            "de un programador.")
 
     def _configurar_estilos(self):
         e = ttk.Style()
@@ -105,10 +136,18 @@ class AppCaptura:
         cont = ttk.Frame(self.raiz, padding=18)
         cont.pack(fill="both", expand=True)
 
-        ttk.Label(cont, text="Captura de Alertas Nacionales",
+        # Encabezado con titulo a la izquierda y boton de config a la derecha
+        cab = ttk.Frame(cont)
+        cab.pack(fill="x")
+        izq = ttk.Frame(cab)
+        izq.pack(side="left", fill="x", expand=True)
+        ttk.Label(izq, text="Captura de Alertas Nacionales",
                   style="Titulo.TLabel").pack(anchor="w")
-        ttk.Label(cont, text="Completa los pasos y presiona Procesar.",
+        ttk.Label(izq, text="Completa los pasos y presiona Procesar.",
                   style="Sub.TLabel").pack(anchor="w", pady=(2, 14))
+        ttk.Button(cab, text="Configurar campos",
+                   command=self._abrir_configuracion).pack(side="right",
+                                                           anchor="n")
 
         tarjeta = ttk.Frame(cont, style="Card.TFrame", padding=16)
         tarjeta.pack(fill="x")
@@ -239,6 +278,21 @@ class AppCaptura:
         if ruta:
             self.var_procesados.set(ruta)
 
+    def _abrir_configuracion(self):
+        """Abre la ventana de configuracion de campos."""
+        if self.procesando:
+            messagebox.showinfo("Espera",
+                                "Termina el proceso actual antes de configurar.")
+            return
+        VentanaConfig(self.raiz, al_guardar=self._recargar_config)
+
+    def _recargar_config(self):
+        """Se llama tras guardar la config: recarga la copia en memoria."""
+        self.config = cfg.cargar_configuracion()
+        messagebox.showinfo(
+            "Configuracion actualizada",
+            "Los cambios se aplicaran en el proximo proceso.")
+
     # ---------- Procesar ----------
     def _al_presionar_procesar(self):
         if self.procesando:
@@ -297,7 +351,7 @@ class AppCaptura:
         try:
             resumen = motor.procesar_carpeta(
                 carpeta, excel, procesados,
-                hojas=hojas, log=self._log_desde_hilo)
+                hojas=hojas, config=self.config, log=self._log_desde_hilo)
             self.cola_logs.put(("RESUMEN", resumen))
         except Exception as e:
             self.cola_logs.put(("LOG", f"ERROR inesperado: {e}"))

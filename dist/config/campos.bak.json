@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "actualizado": "2026-07-07T17:06:07",
+  "campos": [
+    {
+      "clave": "expediente",
+      "etiquetas_pdf": [],
+      "encabezados_excel": [
+        "EXPEDIENTE"
+      ],
+      "tipo": "sistema",
+      "obligatorio": false
+    },
+    {
+      "clave": "fecha_registro",
+      "etiquetas_pdf": [],
+      "encabezados_excel": [
+        "FECHA DE REGISTRO"
+      ],
+      "tipo": "sistema",
+      "obligatorio": false
+    },
+    {
+      "clave": "nombre",
+      "etiquetas_pdf": [
+        "Nombre Social:"
+      ],
+      "encabezados_excel": [
+        "NOMBRE"
+      ],
+      "tipo": "especial",
+      "obligatorio": true
+    },
+    {
+      "clave": "fub",
+      "etiquetas_pdf": [
+        "Folio Unico de Identificacion"
+      ],
+      "encabezados_excel": [
+        "FUB",
+        "Folio Unico de Identificacion"
+      ],
+      "tipo": "especial",
+      "obligatorio": true
+    },
+    {
+      "clave": "lugar_hechos",
+      "etiquetas_pdf": [
+        "Lugar de los hechos:"
+      ],
+      "encabezados_excel": [
+        "LUGAR DE HECHOS",
+        "Lugar de los hechos"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "municipio",
+      "etiquetas_pdf": [
+        "MUNICIPIO:"
+      ],
+      "encabezados_excel": [
+        "MUNICIPIO"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "fecha_hecho",
+      "etiquetas_pdf": [
+        "Fecha de hechos:"
+      ],
+      "encabezados_excel": [
+        "FECHA DE HECHO",
+        "Fecha de hechos"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "fecha_percato",
+      "etiquetas_pdf": [
+        "Fecha de percato:"
+      ],
+      "encabezados_excel": [
+        "FECHA DE PERCATO"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "caracteristicas_fisicas",
+      "etiquetas_pdf": [
+        "Caracteristicas fisicas:"
+      ],
+      "encabezados_excel": [
+        "Caracteristicas fisicas"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "senas_particulares",
+      "etiquetas_pdf": [
+        "Senas particulares:"
+      ],
+      "encabezados_excel": [
+        "Senas particulares"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "prendas_vestir",
+      "etiquetas_pdf": [
+        "Prendas de vestir:"
+      ],
+      "encabezados_excel": [
+        "Prendas de vestir"
+      ],
+      "tipo": "especial",
+      "obligatorio": false
+    },
+    {
+      "clave": "edad_desaparecer",
+      "etiquetas_pdf": [
+        "Edad al momento de la desaparicion:"
+      ],
+      "encabezados_excel": [
+        "EDAD AL DESAPARECER",
+        "Edad al momento de la desaparicion"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "edad_actual",
+      "etiquetas_pdf": [
+        "Edad Actual:"
+      ],
+      "encabezados_excel": [
+        "EDAD ACTUAL"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "sexo",
+      "etiquetas_pdf": [
+        "Sexo:"
+      ],
+      "encabezados_excel": [
+        "SEXO"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "genero",
+      "etiquetas_pdf": [
+        "Genero:"
+      ],
+      "encabezados_excel": [
+        "GENERO"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "nacionalidad",
+      "etiquetas_pdf": [
+        "Nacionalidad:"
+      ],
+      "encabezados_excel": [
+        "NACIONALIDAD"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "lugar_nacimiento",
+      "etiquetas_pdf": [
+        "Lugar de nacimiento:"
+      ],
+      "encabezados_excel": [
+        "Lugar de nacimiento"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "habla_espanol",
+      "etiquetas_pdf": [
+        "¿Habla español?:"
+      ],
+      "encabezados_excel": [
+        "Habla espanol"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "lengua_indigena",
+      "etiquetas_pdf": [
+        "Idioma o lengua indígena:"
+      ],
+      "encabezados_excel": [
+        "Idioma o lengua indigena",
+        "Lengua indigena"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "discapacidad",
+      "etiquetas_pdf": [
+        "Discapacidad:"
+      ],
+      "encabezados_excel": [
+        "Discapacidad"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "hora_hecho",
+      "etiquetas_pdf": [
+        "Hora de hechos:"
+      ],
+      "encabezados_excel": [
+        "Hora de hechos",
+        "Hora de hecho"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "hora_percato",
+      "etiquetas_pdf": [
+        "Hora de percato:"
+      ],
+      "encabezados_excel": [
+        "Hora de percato"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "carpeta_investigacion",
+      "etiquetas_pdf": [
+        "Carpeta de investigación"
+      ],
+      "encabezados_excel": [
+        "Carpeta de investigacion"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "autoridad",
+      "etiquetas_pdf": [
+        "Autoridades Competentes:"
+      ],
+      "encabezados_excel": [
+        "AUTORIDAD QUE INGRESO EL REPORTE",
+        "Autoridades Competentes",
+        "Autoridad"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    },
+    {
+      "clave": "anios",
+      "etiquetas_pdf": [
+        "años"
+      ],
+      "encabezados_excel": [
+        "anios"
+      ],
+      "tipo": "simple",
+      "obligatorio": false
+    }
+  ]
+}

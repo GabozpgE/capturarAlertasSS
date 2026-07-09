@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+
 import re
 import sys
 import shutil
@@ -11,11 +12,15 @@ import pdfplumber
 import openpyxl
 from copy import copy
 
-# ----------------- CONFIGURACION -----------------
+# ----------------- CONFIGURACION ----------------- uwu 
 EXCEL_DEFAULT = "BASE ALERTAS NACIONAL 2026 (JOAO).xlsx"
 HOJA_DEFAULT = "Hoja1"          # se usa solo si no se especifica otra
-ANIO_EXPEDIENTE = 2026          # ano que va en AN/{id}/{anio}
+ANIO_EXPEDIENTE = 2026          
 PRIMERA_FILA_DATOS = 2           # los datos empiezan en la fila 2
+
+# Las columnas NO se fijan por posicion. Se detectan leyendo los
+# encabezados de la fila 1. Asi el Excel puede reordenar o renombrar columnas sin romper
+# el programa.
 
 
 
@@ -68,7 +73,7 @@ def fecha_a_objeto(fecha_str: str):
     correctamente y NO marcara el triangulo verde de "fecha como texto".
 
     Si el texto no tiene forma de fecha, devuelve la cadena original en
-    mayusculas (para no perder informacion en casos raros).
+    mayusculas (para no perder informacion en casos raros uwu).
     """
     fecha_str = (fecha_str or "").strip()
     m = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", fecha_str)
@@ -103,13 +108,19 @@ def _normalizar_encabezado(texto) -> str:
     'FECHA \\nDE HECHO' y 'fecha de hecho' quedan iguales.
     'Características físicas' y 'CARACTERISTICAS FISICAS' quedan iguales.
     """
+    # El problema que resuelve esto: los encabezados del Excel vienen con
+    # acentos, saltos de linea metidos a mano ('FECHA \n DE HECHO') y mayusculas
+    # inconsistentes. Si comparamos tal cual, nunca coinciden. La solucion es
+    # "aplanar" ambos lados a una forma comun antes de comparar.
     if texto is None:
         return ""
     t = str(texto)
-    # quitar acentos
+    # NFD separa cada letra de su acento en dos caracteres; luego tiramos los
+    # acentos sueltos (categoria "Mn"). Resultado: texto sin tildes.
     t = unicodedata.normalize("NFD", t)
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")
-    # a minusculas, quitar signos, colapsar espacios
+    # todo a minusculas, cambiamos cualquier signo raro por espacio, y
+    # colapsamos espacios repetidos. Queda una version "limpia" y comparable.
     t = t.lower()
     t = re.sub(r"[^a-z0-9ñ ]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
@@ -151,24 +162,37 @@ MAPA_ENCABEZADOS = {
 }
 
 
-def mapear_columnas(ws) -> dict:
+def mapear_columnas(ws, mapa_encabezados=None) -> dict:
     """
     Lee la fila 1 (encabezados) y devuelve un diccionario que dice, para
     cada dato interno, en que numero de columna esta.
     Ejemplo: {'nombre': 4, 'fub': 10, 'municipio': 16, ...}
 
+    'mapa_encabezados' es {clave: [encabezados posibles]}. Normalmente viene
+    de la configuracion del usuario. Si no se pasa, usa el mapa por defecto
+    fijo en el codigo (MAPA_ENCABEZADOS), como respaldo.
+
     Si un encabezado no aparece en la hoja, ese dato simplemente no se
     escribe (la hoja quiza no tiene esa columna).
     """
-    # Normalizar todos los encabezados de la fila 1
+    if mapa_encabezados is None:
+        mapa_encabezados = MAPA_ENCABEZADOS
+
+    # Primer paso: recorremos la fila 1 del Excel y armamos un diccionario
+    # {encabezado_normalizado: numero_de_columna}. Es como hacer un indice de
+    # "en que columna esta cada titulo" para luego buscar rapido.
     encabezados = {}
     for col in range(1, ws.max_column + 1):
         norm = _normalizar_encabezado(ws.cell(row=1, column=col).value)
         if norm:
             encabezados[norm] = col
 
+    # Segundo paso: por cada dato que queremos escribir, probamos sus nombres
+    # posibles (normalizados) contra el indice de arriba. El primero que exista
+    # en la hoja, esa es su columna. Si ninguno aparece, ese dato no se mapea y
+    # simplemente no se escribira (la hoja no tiene esa columna, y ya).
     mapa = {}
-    for dato, posibles in MAPA_ENCABEZADOS.items():
+    for dato, posibles in mapa_encabezados.items():
         for nombre in posibles:
             clave = _normalizar_encabezado(nombre)
             if clave in encabezados:
@@ -225,8 +249,62 @@ def extraer_bloque_datos(texto: str, etiqueta_ini: str, etiqueta_fin: str) -> st
     return bloque
 
 
-def extraer_datos(texto: str) -> dict:
-    """Extrae cada campo del flyer usando las etiquetas como anclas."""
+def extraer_campo_simple(texto: str, etiquetas: list,
+                         otras_etiquetas=None) -> str:
+    """
+    Extrae un campo del tipo 'etiqueta: valor'.
+
+    Como en el PDF varios campos comparten linea
+    (ej. 'Sexo: HOMBRE Genero: MASCULINO'), el valor se corta cuando
+    aparece CUALQUIER otra etiqueta conocida, o al fin de linea.
+
+    - etiquetas: las etiquetas posibles de ESTE campo (se prueba cada una).
+    - otras_etiquetas: lista de etiquetas de OTROS campos, para saber donde
+      cortar. Si no se pasa, corta en fin de linea.
+    """
+    otras = otras_etiquetas or []
+    for etq in etiquetas:
+        etq = etq.strip()
+        if not etq:
+            continue
+        m = re.search(re.escape(etq), texto, re.IGNORECASE)
+        if not m:
+            continue
+        # Agarramos todo lo que sigue despues de la etiqueta, pero solo hasta
+        # el fin de la linea. El valor de un campo nunca cruza a otra linea.
+        inicio = m.end()
+        resto = texto[inicio:]
+        fin_linea = resto.find("\n")
+        if fin_linea != -1:
+            resto = resto[:fin_linea]
+        # Aqui esta el truco fino: como en el PDF varias etiquetas comparten la
+        # misma linea ('Sexo: MUJER Genero: FEMENINO'), buscamos donde empieza
+        # la SIGUIENTE etiqueta conocida y cortamos justo antes. Nos quedamos
+        # con la posicion de corte mas temprana que encontremos.
+        corte = len(resto)
+        for otra in otras:
+            otra = otra.strip()
+            if not otra:
+                continue
+            mo = re.search(re.escape(otra), resto, re.IGNORECASE)
+            if mo and mo.start() < corte:
+                corte = mo.start()
+        # strip(" :") por si quedo un ": " colgando al inicio o final.
+        return resto[:corte].strip(" :")
+    return ""
+
+
+def extraer_datos(texto: str, config=None) -> dict:
+    """
+    Extrae cada campo del flyer.
+
+    Los campos ESPECIALES (nombre, fub, lugar, fechas, caracteristicas,
+    etc.) tienen logica propia y se extraen siempre igual.
+
+    Los campos SIMPLES (etiqueta: valor) se extraen usando las etiquetas
+    de la configuracion del usuario si se pasa 'config'; si no, se usan
+    las etiquetas por defecto del codigo.
+    """
     d = {}
 
     # Toma el nombre del titulo de la ficha (suele venir bien escrito).
@@ -245,11 +323,6 @@ def extraer_datos(texto: str) -> dict:
         r"Edad al momento de la desaparici[oó]n:\s*(\d+)", texto)
     d["edad_actual"] = buscar(r"Edad Actual:\s*(\d+)", texto)
 
-    d["sexo"] = buscar(r"Sexo:\s*(.+?)\s*(?:Genero:|G[eé]nero:)", texto)
-    d["genero"] = buscar(r"G[eé]nero:\s*(.+?)\s*(?:Nombre Social:|\n)", texto)
-    d["nacionalidad"] = buscar(
-        r"Nacionalidad:\s*(.+?)\s*(?:¿Habla|Habla|\n)", texto)
-
     d["fub"] = buscar(
         r"Folio [UÚ]nico de Identificaci[oó]n\s*([A-Z0-9\-]+)", texto)
 
@@ -263,38 +336,73 @@ def extraer_datos(texto: str) -> dict:
     d["lugar_hechos"] = estado
     d["municipio"] = municipio
 
-    aut = buscar(r"Autoridades Competentes:\s*(.+?)\s*(?:Si tienes|\n)", texto)
-    d["autoridad"] = aut.upper()
+    # ---------- Campos SIMPLES (configurables) ----------
+    # Si hay config, usamos sus etiquetas; si no, las etiquetas por defecto.
+    if config is not None:
+        try:
+            import config_campos
+            simples = config_campos.campos_simples_desde_config(config)
+        except Exception:
+            simples = {}
+    else:
+        simples = {}
 
-    # ---------- Campos nuevos (Sprint 1) ----------
-    d["lugar_nacimiento"] = buscar(
-        r"Lugar de nacimiento:\s*(.+?)\s*(?:Sexo:|\n)", texto)
-    d["habla_espanol"] = buscar(
-        r"¿Habla español\?:\s*(.+?)\s*(?:Idioma|\n)", texto)
-    d["lengua_indigena"] = buscar(
-        r"Idioma o lengua ind[ií]gena:\s*(.+?)\s*(?:Discapacidad|\n)", texto)
-    d["discapacidad"] = buscar(
-        r"Discapacidad:\s*(.+?)\s*(?:Fecha|\n)", texto)
-    d["hora_hecho"] = buscar(r"Hora de hechos:\s*([\d:]+)", texto)
-    d["hora_percato"] = buscar(r"Hora de percato:\s*([\d:]+)", texto)
-    d["carpeta_investigacion"] = buscar(
-        r"Carpeta de investigaci[oó]n\s*(.+?)\s*(?:DATOS|\n)", texto)
+    # Etiquetas por defecto de los campos simples (respaldo si no hay config)
+    simples_default = {
+        "sexo": ["Sexo:"],
+        "genero": ["Genero:", "Género:"],
+        "nacionalidad": ["Nacionalidad:"],
+        "lugar_nacimiento": ["Lugar de nacimiento:"],
+        "habla_espanol": ["¿Habla español?:", "Habla espanol?:"],
+        "lengua_indigena": ["Idioma o lengua indígena:",
+                            "Idioma o lengua indigena:"],
+        "discapacidad": ["Discapacidad:"],
+        "hora_hecho": ["Hora de hechos:"],
+        "hora_percato": ["Hora de percato:"],
+        "carpeta_investigacion": ["Carpeta de investigación",
+                                 "Carpeta de investigacion"],
+        "autoridad": ["Autoridades Competentes:"],
+    }
 
-    # Caracteristicas fisicas: en el PDF la etiqueta puede aparecer EN MEDIO
-    # del texto (parte antes y parte despues). Por eso tomamos todo lo que
-    # hay entre 'DATOS' y 'Señas particulares:', y quitamos la etiqueta.
+    # Reunir TODAS las etiquetas conocidas (para saber donde cortar cada valor)
+    todas_las_etiquetas = []
+    for etqs in simples_default.values():
+        todas_las_etiquetas.extend(etqs)
+    # etiquetas de campos que comparten linea y no estan en simples_default
+    todas_las_etiquetas.extend(["Edad al momento de la desaparicion:",
+                                "Edad Actual:", "Genero:", "Género:",
+                                "Nombre Social:", "Idioma", "Fecha de hechos:",
+                                "Fecha de percato:", "Hora de hechos:",
+                                "Hora de percato:"])
+
+    for clave, etqs_default in simples_default.items():
+        etiquetas = simples.get(clave, etqs_default)
+        # las "otras" son todas menos las de este campo
+        otras = [e for e in todas_las_etiquetas if e not in etiquetas]
+        d[clave] = extraer_campo_simple(texto, etiquetas, otras)
+
+    # ---------- Campos ESPECIALES (logica propia, no configurable) ----------
+    # El caso raro de todo el programa: en el PDF la etiqueta 'Características
+    # físicas:' NO viene al inicio de su texto, sino EN MEDIO. O sea, parte del
+    # texto va antes de la etiqueta y parte despues. Por eso no lo podemos leer
+    # como un 'etiqueta: valor' normal.
+    # La maña: agarramos TODO el bloque entre 'DATOS' y 'Señas particulares:'
+    # (que es donde vive), y despues le borramos la etiqueta que quedo colgada
+    # en medio. Asi recuperamos el texto completo aunque este partido.
     m_cf = re.search(
         r"DATOS\s*(.*?)\s*Señas particulares:",
         texto, re.IGNORECASE | re.DOTALL)
     if m_cf:
         cf = m_cf.group(1)
         cf = re.sub(r"Características f[ií]sicas:", " ", cf, flags=re.IGNORECASE)
-        cf = re.sub(r"\s*\n\s*", " ", cf)
+        cf = re.sub(r"\s*\n\s*", " ", cf)   # unir las lineas partidas
         cf = re.sub(r"\s+", " ", cf).strip()
         d["caracteristicas_fisicas"] = cf
     else:
         d["caracteristicas_fisicas"] = ""
 
+    # Estos dos si son bloques "normales": el texto va todo junto despues de su
+    # etiqueta, asi que el helper generico los saca sin problema.
     d["senas_particulares"] = extraer_bloque_datos(
         texto, "Señas particulares:", r"Prendas de vestir:")
     d["prendas_vestir"] = extraer_bloque_datos(
@@ -327,15 +435,19 @@ def quitar_acentos(texto: str) -> str:
     """
     if not isinstance(texto, str):
         return texto
-    # Protege la enie y la U con dieresis con marcadores temporales
+    # El truco de las eñes: si dejaramos que la normalizacion Unicode hiciera
+    # su trabajo a secas, la Ñ tambien se descompondria y terminaria como N.
+    # Y un MUÑOZ no puede volverse MUNOZ, la eñe es otra letra, no una N con
+    # acento. Asi que ANTES de limpiar, escondemos las eñes (y las ü) detras de
+    # unos caracteres marcadores invisibles que la normalizacion no toca...
     protegidos = (texto
                   .replace("Ñ", "\x00").replace("ñ", "\x01")
                   .replace("Ü", "\x02").replace("ü", "\x03"))
-    # Descompone los caracteres acentuados y elimina las marcas de acento
+    # ...quitamos los acentos del resto con toda tranquilidad...
     sin_acentos = unicodedata.normalize("NFD", protegidos)
     sin_acentos = "".join(c for c in sin_acentos
                           if unicodedata.category(c) != "Mn")
-    # Restaura la enie y la dieresis
+    # ...y al final devolvemos las eñes y ü a su lugar. Listo, MUÑOZ sobrevive.
     return (sin_acentos
             .replace("\x00", "Ñ").replace("\x01", "ñ")
             .replace("\x02", "Ü").replace("\x03", "ü"))
@@ -396,19 +508,25 @@ def a_mayusculas(datos: dict) -> dict:
 
     No toca las fechas (son objetos date).
     """
-    no_tocar = {"fecha_hecho", "fecha_percato"}
+    # Aqui decidimos, campo por campo, que tratamiento le toca. El orden de los
+    # if importa: primero descartamos lo que NO se toca, luego los casos
+    # especiales, y al final el tratamiento normal (el "else").
+    no_tocar = {"fecha_hecho", "fecha_percato"}          # fechas: son date, ni tocar
     descriptivos = {"caracteristicas_fisicas", "senas_particulares",
-                    "prendas_vestir"}
-    horas = {"hora_hecho", "hora_percato"}
+                    "prendas_vestir"}                     # oraciones: limpieza suave
+    horas = {"hora_hecho", "hora_percato"}               # HH:MM: dejar los dos puntos
     salida = {}
     for k, v in datos.items():
         if not isinstance(v, str) or k in no_tocar:
+            # fechas (objetos date) o cualquier cosa que no sea texto: tal cual
             salida[k] = v
         elif k in horas:
-            salida[k] = v.strip()  # dejar HH:MM intacto
+            salida[k] = v.strip()  # dejar HH:MM intacto, si le quitamos ':' se arruina
         elif k in descriptivos:
+            # mayuscula + limpieza suave: conserva comas y acentos del contexto
             salida[k] = limpiar_suave_sql(v.upper())
         else:
+            # el resto: mayuscula, fuera acentos (menos Ñ) y solo lo permitido
             salida[k] = limpiar_para_sql(quitar_acentos(v.upper()))
     return salida
 
@@ -448,9 +566,15 @@ def escribir_fila(ws, datos: dict, mapa: dict):
         raise ErrorPDF("la hoja no tiene una columna 'NOMBRE'")
 
     fila = fila_para_nuevo_registro(ws, col_nombre)
-    fila_modelo = fila - 1
+    fila_modelo = fila - 1  # la fila de arriba, que ya tiene el formato bueno
 
     # --- Copiar el formato de la fila anterior a la fila nueva ---
+    # openpyxl no hereda estilos en celdas vacias. Si escribimos sin mas, la
+    # fila nueva sale "pelona", sin el ID en rojo, sin bordes ni la fuente
+    # correcta. La solucion: clonar celda por celda el estilo de la fila de
+    # arriba (que ya esta bien formateada). copy() hace copia independiente,
+    # porque si asignaramos el estilo directo quedarian ligados y cambiar uno
+    # cambiaria el otro.
     if fila_modelo >= PRIMERA_FILA_DATOS:
         for col in range(1, ws.max_column + 1):
             origen = ws.cell(row=fila_modelo, column=col)
@@ -465,7 +589,9 @@ def escribir_fila(ws, datos: dict, mapa: dict):
         if fila_modelo in ws.row_dimensions and ws.row_dimensions[fila_modelo].height:
             ws.row_dimensions[fila].height = ws.row_dimensions[fila_modelo].height
 
-    # El ID ya viene pre-llenado. Lo respetamos; si esta vacio, lo calculamos.
+    # El ID en este Excel ya viene pre-llenado hasta muy abajo. Asi que lo
+    # normal es RESPETAR el que ya esta. Solo si por alguna razon estuviera
+    # vacio, lo calculamos sumandole 1 al de la fila de arriba.
     id_actual = ws.cell(row=fila, column=col_id).value
     if id_actual is None or str(id_actual).strip() == "":
         id_arriba = ws.cell(row=fila_modelo, column=col_id).value
@@ -474,7 +600,8 @@ def escribir_fila(ws, datos: dict, mapa: dict):
     else:
         nuevo_id = int(id_actual)
 
-    # El EXPEDIENTE suele venir pre-llenado. Solo lo ponemos si esta vacio.
+    # Mismo criterio con el EXPEDIENTE: si ya esta puesto, no lo pisamos. Si
+    # esta vacio, lo generamos con el formato AN/{id}/{año}.
     col_exp = mapa.get("expediente")
     expediente = ""
     if col_exp:
@@ -484,7 +611,8 @@ def escribir_fila(ws, datos: dict, mapa: dict):
                     value=f"AN/{nuevo_id}/{ANIO_EXPEDIENTE}")
         expediente = ws.cell(row=fila, column=col_exp).value
 
-    # Todos los valores a escribir. La fecha de registro es hoy.
+    # Juntamos todo lo que vamos a escribir: lo que sacamos del PDF, mas la
+    # fecha de registro (hoy) y el expediente que acabamos de resolver.
     valores = dict(datos)  # copia de lo extraido del PDF
     valores["fecha_registro"] = dt.date.today()
     valores["expediente"] = expediente
@@ -547,7 +675,7 @@ def listar_hojas(ruta_excel) -> list:
 
 
 def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
-                     hoja=None, hojas=None, log=print):
+                     hoja=None, hojas=None, config=None, log=print):
     """
     Procesa todos los PDF de 'carpeta_pdfs' y los registra en UNA o VARIAS
     hojas del Excel en una sola pasada.
@@ -596,7 +724,19 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         log("No hay archivos PDF en la carpeta.")
         return resumen
 
+    # --- Mapa de encabezados: desde la config del usuario si se paso ---
+    mapa_encabezados = None
+    if config is not None:
+        try:
+            import config_campos
+            mapa_encabezados = config_campos.mapa_encabezados_desde_config(config)
+        except Exception:
+            mapa_encabezados = None  # ante cualquier fallo, usa el fijo
+
     # --- Respaldo de seguridad del Excel ---
+    # Antes de tocar el Excel, hacemos una copia .bak. Si algo sale mal a mitad
+    # del proceso, el usuario tiene de donde recuperar su base. Si ni el
+    # respaldo se puede crear, mejor ni empezamos: cancelamos por seguridad.
     try:
         respaldo = ruta_excel.with_suffix(".bak.xlsx")
         shutil.copy(ruta_excel, respaldo)
@@ -607,6 +747,9 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         return resumen
 
     # --- Abrir el Excel una sola vez ---
+    # Lo abrimos UNA vez para toda la tanda (no por cada PDF), es mas rapido.
+    # El PermissionError casi siempre significa que el usuario dejo el Excel
+    # abierto; se lo decimos claro en vez de soltarle un error tecnico.
     try:
         wb = openpyxl.load_workbook(ruta_excel)
     except PermissionError:
@@ -616,8 +759,11 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         log(f"ERROR: no se pudo abrir el Excel ({type(e).__name__}: {e}).")
         return resumen
 
-    # --- Preparar cada hoja: verificar existencia, mapa y FUBs ---
-    # 'destinos' sera una lista de diccionarios, uno por hoja activa.
+    # --- Preparar cada hoja destino ---
+    # Por cada hoja donde vamos a escribir, preparamos de una vez todo lo que
+    # necesitaremos en el bucle: su worksheet, el mapa de columnas (por nombre
+    # de encabezado) y el set de FUBs que ya tiene (para detectar duplicados).
+    # Lo guardamos en 'destinos' para no recalcularlo con cada PDF.
     destinos = []
     for nombre_hoja in hojas:
         if nombre_hoja not in wb.sheetnames:
@@ -625,7 +771,9 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
                 f"Hojas disponibles: {', '.join(wb.sheetnames)}.")
             return resumen
         ws = wb[nombre_hoja]
-        mapa = mapear_columnas(ws)
+        mapa = mapear_columnas(ws, mapa_encabezados)
+        # Sin columna NOMBRE no sabriamos donde empieza el hueco libre ni donde
+        # escribir. Es requisito minimo de cualquier hoja destino.
         if "nombre" not in mapa:
             log(f"ERROR: la hoja '{nombre_hoja}' no tiene columna 'NOMBRE'. "
                 "No se puede saber donde escribir.")
@@ -643,6 +791,9 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
         log(f"ERROR: no se pudo crear la carpeta de procesados ({e}).")
         return resumen
 
+    # Las subcarpetas de duplicados y errores NO se crean aqui a proposito.
+    # Solo se crean si de verdad aparece un duplicado o un error (ver el
+    # _asegurar_carpeta dentro del bucle). Asi no ensuciamos con carpetas vacias.
     carpeta_duplicados = carpeta_procesados / "duplicados"
     carpeta_errores = carpeta_procesados / "errores"
 
@@ -650,26 +801,37 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
     hubo_cambios = False
 
     for pdf in pdfs:
+        # Cada PDF se lee UNA sola vez, aunque vaya a varias hojas. Todo el
+        # trabajo de un PDF va envuelto en try/except: si uno falla, lo
+        # anotamos y seguimos con los demas, no se cae toda la tanda.
         try:
             texto = leer_texto_pdf(str(pdf))
-            datos = a_mayusculas(extraer_datos(texto))
+            datos = a_mayusculas(extraer_datos(texto, config))
             validar_datos(datos)
             fub = (datos.get("fub") or "").strip().upper()
 
+            # Llevamos la cuenta de en que hojas se escribio y en cuales ya
+            # existia. Con esto decidimos despues a donde mover el PDF.
             agregado_en = []   # hojas donde se escribio
             duplicado_en = []  # hojas donde ya existia
 
+            # Recorremos cada hoja destino por separado. El duplicado es POR
+            # HOJA: puede que ya este en la completa pero no en la
+            # personalizada, y entonces se agrega solo donde falta.
             for d in destinos:
                 if fub in d["fubs"]:
                     duplicado_en.append(d["nombre"])
                 else:
                     nuevo_id, fila, _ = escribir_fila(d["ws"], datos, d["mapa"])
+                    # Agregamos el fub al set en memoria para que, si el mismo
+                    # PDF viene dos veces en esta tanda, el segundo ya lo cache.
                     d["fubs"].add(fub)
                     agregado_en.append((d["nombre"], nuevo_id, fila))
                     hubo_cambios = True
 
-            # Reportar y decidir a donde mover el PDF
+            # Segun el resultado, el PDF va a una carpeta u otra:
             if agregado_en:
+                # Se escribio al menos en una hoja -> cuenta como agregado.
                 detalle = ", ".join(f"{h} (ID {i}, fila {f})"
                                     for h, i, f in agregado_en)
                 extra = ""
@@ -679,7 +841,7 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
                 resumen["agregados"].append(pdf.name)
                 _mover(pdf, carpeta_procesados, log)
             else:
-                # No se agrego en ninguna: era duplicado en todas
+                # No entro en ninguna: ya estaba en todas. Va a 'duplicados'.
                 log(f"  [=] {pdf.name}: duplicado en todas las hojas "
                     f"({', '.join(duplicado_en)}). Se omite.")
                 resumen["duplicados"].append(pdf.name)
@@ -687,12 +849,15 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
                 _mover(pdf, carpeta_duplicados, log)
 
         except ErrorPDF as e:
+            # Error "esperado" y con mensaje claro (PDF dañado, sin datos...).
             log(f"  [x] {pdf.name}: ERROR -> {e}")
             resumen["errores"].append((pdf.name, str(e)))
             _asegurar_carpeta(carpeta_errores)
             _mover(pdf, carpeta_errores, log)
 
         except Exception as e:
+            # Red de seguridad: cualquier otro error raro que no previmos.
+            # No se pierde, se anota con su tipo y el PDF va a 'errores'.
             motivo = f"error inesperado ({type(e).__name__}: {e})"
             log(f"  [x] {pdf.name}: {motivo}")
             resumen["errores"].append((pdf.name, motivo))
@@ -738,9 +903,12 @@ def _asegurar_carpeta(carpeta: Path):
 def _mover(pdf: Path, destino: Path, log):
     """Mueve un PDF a la carpeta destino. Si ya existe alli, le agrega
     un sufijo para no sobrescribir."""
+    # Si en la carpeta destino ya hay un archivo con el mismo nombre (ej.
+    # reprocesaste el mismo PDF otro dia), NO lo pisamos. Le buscamos un nombre
+    # libre agregando _1, _2, etc. Asi nunca se pierde un archivo por choque
+    # de nombres.
     objetivo = destino / pdf.name
     if objetivo.exists():
-        # Evitar choque de nombres: agrega _1, _2, etc.
         i = 1
         while True:
             cand = destino / f"{pdf.stem}_{i}{pdf.suffix}"
