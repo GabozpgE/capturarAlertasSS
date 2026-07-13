@@ -10,6 +10,17 @@ from pathlib import Path
 
 import pdfplumber
 import openpyxl
+from openpyxl.styles import PatternFill
+
+# PyMuPDF (fitz) se usa solo para extraer la foto de la persona del PDF.
+# Lo importamos de forma segura: si no esta instalado, la extraccion de
+# fotos simplemente no estara disponible, pero el resto del programa
+# sigue funcionando igual.
+try:
+    import fitz  # PyMuPDF
+    _HAY_FITZ = True
+except Exception:
+    _HAY_FITZ = False
 from copy import copy
 
 # ----------------- CONFIGURACION ----------------- uwu 
@@ -54,6 +65,96 @@ def leer_texto_pdf(ruta_pdf: str) -> str:
         # pdfplumber/pdfminer lanzan varios tipos; los unificamos
         raise ErrorPDF(f"no se pudo leer el PDF (archivo dañado o "
                        f"protegido): {type(e).__name__}")
+
+
+def extraer_foto_persona(ruta_pdf: str):
+    """
+    Saca la foto de la persona desaparecida del PDF y devuelve sus bytes
+    (en el formato original, normalmente JPEG), o None si no la encuentra.
+
+    El PDF trae varias imagenes (logos, escudos, banners y la foto). Para
+    quedarnos con la FOTO y no con un logo, la distinguimos por dos rasgos
+    que solo cumple un retrato:
+      - proporcion vertical: mas alta que ancha (los logos son anchos/planos)
+      - tamaño considerable: no un iconito de pocos pixeles
+
+    Detalle importante: algunos PDF guardan la foto JUNTO con una "mascara"
+    del mismo tamaño (para las esquinas redondeadas del marco). Esa mascara
+    es casi toda de un color, asi que pesa poquisimos bytes y, si la eligieramos,
+    la imagen saldria en blanco. Por eso entre las candidatas nos quedamos con
+    la que MAS BYTES tiene: esa es la foto real con detalle, no la mascara.
+    """
+    if not _HAY_FITZ:
+        return None
+    try:
+        doc = fitz.open(ruta_pdf)
+    except Exception:
+        return None
+
+    mejor = None          # (bytes_peso, datos_imagen, extension)
+    try:
+        for pagina in doc:
+            for img in pagina.get_images(full=True):
+                xref = img[0]
+                try:
+                    base = doc.extract_image(xref)
+                except Exception:
+                    continue
+                w = base.get("width", 0)
+                h = base.get("height", 0)
+                if w == 0 or h == 0:
+                    continue
+                ratio = h / w              # >1 = mas alta que ancha (retrato)
+                area = w * h
+                peso = len(base["image"])  # bytes: distingue foto de mascara
+                # Filtro: forma de retrato y tamaño minimo razonable.
+                es_retrato = ratio >= 1.15
+                es_grande = area >= 150 * 150
+                if es_retrato and es_grande:
+                    # Nos quedamos con la de mayor PESO (la foto real, no la
+                    # mascara blanca que pesa casi nada).
+                    if mejor is None or peso > mejor[0]:
+                        mejor = (peso, base["image"], base["ext"])
+    finally:
+        doc.close()
+
+    return (mejor[1], mejor[2]) if mejor else None
+
+
+def guardar_foto(ruta_pdf: str, fub: str, carpeta_destino, log=print) -> bool:
+    """
+    Extrae la foto del PDF y la guarda como {FUB}.jpg en 'carpeta_destino'.
+    Devuelve True si la guardo, False si no habia foto o algo fallo.
+
+    El FUB se limpia de caracteres que no sirven para nombre de archivo.
+    """
+    resultado = extraer_foto_persona(ruta_pdf)
+    if resultado is None:
+        return False
+    datos_img, _ext = resultado
+
+    # Limpiar el FUB para que sea un nombre de archivo valido (sin / \ : etc.)
+    nombre = re.sub(r'[\\/:*?"<>|]', "_", (fub or "").strip())
+    if not nombre:
+        nombre = "sin_fub"
+
+    carpeta_destino = Path(carpeta_destino)
+    try:
+        carpeta_destino.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log(f"      (no se pudo crear la carpeta de fotos: {e})")
+        return False
+
+    destino = carpeta_destino / f"{nombre}.jpg"
+    try:
+        # Guardamos los bytes tal cual. La foto viene en JPEG dentro del PDF,
+        # asi que escribir con extension .jpg es directo y sin reconvertir.
+        with open(destino, "wb") as f:
+            f.write(datos_img)
+        return True
+    except Exception as e:
+        log(f"      (no se pudo guardar la foto de {nombre}: {e})")
+        return False
 
 
 def buscar(patron: str, texto: str, grupo: int = 1, flags=re.IGNORECASE) -> str:
@@ -550,12 +651,16 @@ def fila_para_nuevo_registro(ws, col_nombre):
         fila += 1
 
 
-def escribir_fila(ws, datos: dict, mapa: dict):
+def escribir_fila(ws, datos: dict, mapa: dict, fecha_registro=None):
     """
     Escribe un registro en la primera fila sin NOMBRE de un worksheet
     YA ABIERTO, usando 'mapa' (dato -> numero de columna) que se obtuvo
     leyendo los encabezados de la fila 1. Asi el orden de las columnas
     puede cambiar sin romper nada.
+
+    'fecha_registro' es la fecha que va en la columna FECHA DE REGISTRO.
+    Si no se pasa, se usa la fecha de hoy. Sirve para cuando el correo
+    llego un dia distinto al que se captura.
 
     No guarda el archivo (lo hace quien llama, una sola vez al final).
     Devuelve (nuevo_id, fila, valores).
@@ -612,9 +717,10 @@ def escribir_fila(ws, datos: dict, mapa: dict):
         expediente = ws.cell(row=fila, column=col_exp).value
 
     # Juntamos todo lo que vamos a escribir: lo que sacamos del PDF, mas la
-    # fecha de registro (hoy) y el expediente que acabamos de resolver.
+    # fecha de registro (la que eligio el usuario, o hoy si no eligio) y el
+    # expediente que acabamos de resolver.
     valores = dict(datos)  # copia de lo extraido del PDF
-    valores["fecha_registro"] = dt.date.today()
+    valores["fecha_registro"] = fecha_registro or dt.date.today()
     valores["expediente"] = expediente
 
     numericos = {"edad_desaparecer", "edad_actual"}
@@ -675,7 +781,8 @@ def listar_hojas(ruta_excel) -> list:
 
 
 def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
-                     hoja=None, hojas=None, config=None, log=print):
+                     hoja=None, hojas=None, config=None, fecha_registro=None,
+                     carpeta_fotos=None, log=print):
     """
     Procesa todos los PDF de 'carpeta_pdfs' y los registra en UNA o VARIAS
     hojas del Excel en una sola pasada.
@@ -723,6 +830,14 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
     if not pdfs:
         log("No hay archivos PDF en la carpeta.")
         return resumen
+
+    # Si el usuario pidio guardar fotos pero PyMuPDF no esta disponible, lo
+    # avisamos claro (antes se quedaba callado y parecia que no hacia nada).
+    if carpeta_fotos and not _HAY_FITZ:
+        log("AVISO: se pidio guardar fotos, pero la libreria para leer "
+            "imagenes de PDF (PyMuPDF) no esta instalada. Los registros se "
+            "haran normal, pero NO se guardaran fotos. Instala con: "
+            "pip install pymupdf")
 
     # --- Mapa de encabezados: desde la config del usuario si se paso ---
     mapa_encabezados = None
@@ -822,12 +937,22 @@ def procesar_carpeta(carpeta_pdfs, ruta_excel, carpeta_procesados,
                 if fub in d["fubs"]:
                     duplicado_en.append(d["nombre"])
                 else:
-                    nuevo_id, fila, _ = escribir_fila(d["ws"], datos, d["mapa"])
+                    nuevo_id, fila, _ = escribir_fila(d["ws"], datos, d["mapa"],
+                                                      fecha_registro)
                     # Agregamos el fub al set en memoria para que, si el mismo
                     # PDF viene dos veces en esta tanda, el segundo ya lo cache.
                     d["fubs"].add(fub)
                     agregado_en.append((d["nombre"], nuevo_id, fila))
                     hubo_cambios = True
+
+            # --- Guardar la foto de la persona (si se pidio) ---
+            # Se guarda siempre que el PDF sea valido y tenga FUB, sin importar
+            # si termina como nuevo o duplicado: la foto es util igual.
+            if carpeta_fotos and fub and _HAY_FITZ:
+                if guardar_foto(str(pdf), fub, carpeta_fotos, log):
+                    log(f"      foto guardada: {fub}.jpg")
+                else:
+                    log(f"      (no se encontro foto en {pdf.name})")
 
             # Segun el resultado, el PDF va a una carpeta u otra:
             if agregado_en:
@@ -920,6 +1045,186 @@ def _mover(pdf: Path, destino: Path, log):
         shutil.move(str(pdf), str(objetivo))
     except Exception as e:
         log(f"      (no se pudo mover {pdf.name}: {e})")
+
+
+# ---------------------------------------------------------------------------
+# CESE DE DIFUSION
+# Marca personas como LOCALIZADAS: pone STATUS=LOCALIZADO, la fecha de
+# localizado, y pinta de verde las celdas con texto de esa fila.
+# ---------------------------------------------------------------------------
+
+# Verde claro tipo Excel (el que se ve en la paleta estandar de Office).
+VERDE_LOCALIZADO = "A9D08E"
+
+
+def _construir_indice_fub(ws, col_fub, col_nombre) -> dict:
+    """
+    Recorre la hoja y arma un indice {fub_normalizado: fila} para poder
+    encontrar rapido en que fila esta cada persona por su FUB.
+    Recorremos mientras haya NOMBRE (ese es el indicador de registro real).
+    """
+    indice = {}
+    if col_fub is None or col_nombre is None:
+        return indice
+    fila = PRIMERA_FILA_DATOS
+    while True:
+        nombre = ws.cell(row=fila, column=col_nombre).value
+        if nombre is None or str(nombre).strip() == "":
+            break
+        fub = ws.cell(row=fila, column=col_fub).value
+        if fub is not None and str(fub).strip():
+            indice[str(fub).strip().upper()] = fila
+        fila += 1
+    return indice
+
+
+def marcar_localizados(ruta_excel, fubs, hoja=None, fecha_localizado=None,
+                       log=print):
+    """
+    Marca como LOCALIZADAS a las personas cuyos FUB se pasan en 'fubs'.
+
+    Para cada FUB encontrado en la hoja:
+      - escribe 'LOCALIZADO' en la columna STATUS
+      - escribe la fecha en la columna FECHA DE LOCALIZADO
+      - pinta de verde SOLO las celdas de esa fila que tienen texto
+
+    Devuelve un resumen: {'localizados': [...], 'no_encontrados': [...]}.
+    'fubs' es una lista de folios (se normalizan a mayusculas sin espacios).
+    """
+    resumen = {"localizados": [], "no_encontrados": []}
+    ruta_excel = Path(ruta_excel)
+
+    if not ruta_excel.is_file():
+        log(f"ERROR: no encuentro el Excel: {ruta_excel}")
+        return resumen
+
+    # Limpiar y quitar repetidos de la lista de FUBs recibida
+    fubs_limpios = []
+    vistos = set()
+    for f in fubs:
+        f = (f or "").strip().upper()
+        if f and f not in vistos:
+            vistos.add(f)
+            fubs_limpios.append(f)
+    if not fubs_limpios:
+        log("No se indico ningun FUB para localizar.")
+        return resumen
+
+    # Respaldo antes de tocar nada
+    try:
+        respaldo = ruta_excel.with_suffix(".bak.xlsx")
+        shutil.copy(ruta_excel, respaldo)
+        log(f"Respaldo creado: {respaldo.name}")
+    except Exception as e:
+        log(f"ERROR: no se pudo crear el respaldo ({e}). Se cancela.")
+        return resumen
+
+    # Abrir Excel
+    try:
+        wb = openpyxl.load_workbook(ruta_excel)
+    except PermissionError:
+        log("ERROR: el Excel esta abierto. Cierralo y vuelve a intentar.")
+        return resumen
+    except Exception as e:
+        log(f"ERROR: no se pudo abrir el Excel ({type(e).__name__}: {e}).")
+        return resumen
+
+    hoja_usar = hoja if hoja else HOJA_DEFAULT
+    if hoja_usar not in wb.sheetnames:
+        log(f"ERROR: el Excel no tiene la hoja '{hoja_usar}'. "
+            f"Hojas disponibles: {', '.join(wb.sheetnames)}.")
+        return resumen
+    ws = wb[hoja_usar]
+
+    # Ubicar columnas por su encabezado (igual que en el resto del programa)
+    mapa = mapear_columnas(ws)
+    col_fub = mapa.get("fub")
+    col_nombre = mapa.get("nombre")
+    col_status = _buscar_columna_por_nombre(ws, ["status", "estatus", "estado"])
+    col_fecha_loc = _buscar_columna_por_nombre(
+        ws, ["fecha de localizado", "fecha localizado"])
+
+    # Sin estas columnas no podemos trabajar; avisamos claro cual falta.
+    faltan = []
+    if col_fub is None:
+        faltan.append("FUB")
+    if col_status is None:
+        faltan.append("STATUS")
+    if col_fecha_loc is None:
+        faltan.append("FECHA DE LOCALIZADO")
+    if faltan:
+        log(f"ERROR: la hoja '{hoja_usar}' no tiene la(s) columna(s): "
+            f"{', '.join(faltan)}. No se puede continuar.")
+        return resumen
+
+    fecha_localizado = fecha_localizado or dt.date.today()
+    relleno = PatternFill(start_color=VERDE_LOCALIZADO,
+                          end_color=VERDE_LOCALIZADO, fill_type="solid")
+
+    # Armar el indice FUB -> fila una sola vez (rapido aunque haya miles)
+    indice = _construir_indice_fub(ws, col_fub, col_nombre)
+
+    hubo_cambios = False
+    for fub in fubs_limpios:
+        fila = indice.get(fub)
+        if fila is None:
+            log(f"  [?] FUB {fub}: no se encontro en la hoja.")
+            resumen["no_encontrados"].append(fub)
+            continue
+
+        # Escribir STATUS y FECHA DE LOCALIZADO
+        ws.cell(row=fila, column=col_status, value="LOCALIZADO")
+        ws.cell(row=fila, column=col_fecha_loc, value=fecha_localizado)
+
+        # Pintar de verde SOLO las celdas de la fila que tienen texto/valor
+        for col in range(1, ws.max_column + 1):
+            celda = ws.cell(row=fila, column=col)
+            if celda.value is not None and str(celda.value).strip() != "":
+                celda.fill = relleno
+
+        nombre = ws.cell(row=fila, column=col_nombre).value if col_nombre else ""
+        log(f"  [+] FUB {fub}: LOCALIZADO en fila {fila} ({nombre}).")
+        resumen["localizados"].append(fub)
+        hubo_cambios = True
+
+    # Guardar una sola vez
+    if hubo_cambios:
+        try:
+            wb.save(ruta_excel)
+        except PermissionError:
+            log("ERROR al guardar: el Excel esta abierto. Los cambios NO se "
+                "guardaron.")
+            return resumen
+        except Exception as e:
+            log(f"ERROR al guardar ({type(e).__name__}: {e}).")
+            return resumen
+
+    log("-" * 50)
+    log(f"Listo. Localizados: {len(resumen['localizados'])} | "
+        f"No encontrados: {len(resumen['no_encontrados'])}.")
+    if resumen["no_encontrados"]:
+        log("")
+        log("FUB que no se encontraron en la hoja:")
+        for f in resumen["no_encontrados"]:
+            log(f"   - {f}")
+    return resumen
+
+
+def _buscar_columna_por_nombre(ws, nombres_posibles):
+    """
+    Busca en la fila 1 una columna cuyo encabezado (normalizado) coincida con
+    alguno de los nombres posibles. Devuelve el numero de columna o None.
+    """
+    encabezados = {}
+    for col in range(1, ws.max_column + 1):
+        norm = _normalizar_encabezado(ws.cell(row=1, column=col).value)
+        if norm:
+            encabezados[norm] = col
+    for nombre in nombres_posibles:
+        clave = _normalizar_encabezado(nombre)
+        if clave in encabezados:
+            return encabezados[clave]
+    return None
 
 
 def main():

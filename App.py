@@ -10,6 +10,7 @@ Para ejecutar:
 
 import threading
 import queue
+import datetime as dt
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 import capturar_alerta as motor
 import config_campos as cfg
 from ventana_config import VentanaConfig
+from ventana_cese import VentanaCese
 
 COLOR_FONDO = "#f4f6f8"
 COLOR_TITULO = "#1f3a5f"
@@ -61,6 +63,24 @@ AYUDAS = {
         "  - Con error: en una subcarpeta 'errores'.\n\n"
         "Si la carpeta no existe, el programa la crea sola."
     ),
+    "fecha": (
+        "Fecha de registro",
+        "Es la fecha que se guardara en la columna FECHA DE REGISTRO de "
+        "cada nuevo registro.\n\n"
+        "Por defecto es la fecha de hoy. Cambiala si los correos llegaron "
+        "un dia distinto al de captura (por ejemplo, si registras hoy "
+        "correos que llegaron ayer).\n\n"
+        "Usa el boton 'Hoy' para volver rapido a la fecha actual."
+    ),
+    "fotos": (
+        "Guardar fotos",
+        "Si esta activado, por cada PDF se extrae la foto de la persona y se "
+        "guarda como imagen en la carpeta que elijas.\n\n"
+        "Cada foto se guarda con el FUB de la persona como nombre "
+        "(ejemplo: FI26-XXXX.jpg).\n\n"
+        "Puedes desactivarlo si no necesitas las fotos; el proceso sera un "
+        "poco mas rapido."
+    ),
 }
 
 
@@ -68,7 +88,7 @@ class AppCaptura:
     def __init__(self, raiz):
         self.raiz = raiz
         raiz.title("Captura de Alertas Nacionales")
-        raiz.geometry("840x680")
+        raiz.geometry("880x820")
         raiz.minsize(740, 620)
         raiz.configure(bg=COLOR_FONDO)
 
@@ -80,6 +100,17 @@ class AppCaptura:
         self.var_hoja_completa = tk.StringVar()
         self.var_usar_personal = tk.BooleanVar(value=False)
         self.var_hoja_personal = tk.StringVar()
+
+        # Fecha de registro: por defecto hoy, pero editable (para correos que
+        # llegaron un dia distinto al de captura). Tres campos dia/mes/año.
+        hoy = dt.date.today()
+        self.var_dia = tk.StringVar(value=f"{hoy.day:02d}")
+        self.var_mes = tk.StringVar(value=f"{hoy.month:02d}")
+        self.var_anio = tk.StringVar(value=str(hoy.year))
+
+        # Extraccion de fotos: activada por defecto, pero se puede desmarcar.
+        self.var_guardar_fotos = tk.BooleanVar(value=True)
+        self.var_carpeta_fotos = tk.StringVar()
 
         self.cola_logs = queue.Queue()
         self.procesando = False
@@ -133,8 +164,39 @@ class AppCaptura:
                     padding=10)
 
     def _construir_interfaz(self):
-        cont = ttk.Frame(self.raiz, padding=18)
-        cont.pack(fill="both", expand=True)
+        # --- Estructura con scroll vertical para toda la ventana ---
+        # Ponemos un Canvas con una barra de scroll a la derecha. Todo el
+        # contenido vive DENTRO del canvas, asi que si la ventana se achica,
+        # el usuario puede desplazarse para llegar a lo que quedo abajo.
+        contenedor = ttk.Frame(self.raiz)
+        contenedor.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(contenedor, bg=COLOR_FONDO, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(contenedor, orient="vertical",
+                                  command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # 'cont' es el marco real donde va todo. Lo metemos dentro del canvas.
+        cont = ttk.Frame(canvas, padding=18)
+        ventana_id = canvas.create_window((0, 0), window=cont, anchor="nw")
+
+        # Cuando el contenido cambia de tamaño, actualizamos el area scrolleable.
+        def _al_cambiar_tamano(evento):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        cont.bind("<Configure>", _al_cambiar_tamano)
+
+        # Que el contenido ocupe todo el ancho del canvas (para que no quede
+        # una franja vacia a la derecha al agrandar la ventana).
+        def _ajustar_ancho(evento):
+            canvas.itemconfig(ventana_id, width=evento.width)
+        canvas.bind("<Configure>", _ajustar_ancho)
+
+        # Permitir desplazarse con la rueda del mouse (lo que la gente espera).
+        def _rueda_mouse(evento):
+            canvas.yview_scroll(int(-1 * (evento.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _rueda_mouse)
 
         # Encabezado con titulo a la izquierda y boton de config a la derecha
         cab = ttk.Frame(cont)
@@ -148,6 +210,9 @@ class AppCaptura:
         ttk.Button(cab, text="Configurar campos",
                    command=self._abrir_configuracion).pack(side="right",
                                                            anchor="n")
+        ttk.Button(cab, text="Cese de difusion",
+                   command=self._abrir_cese).pack(side="right", anchor="n",
+                                                  padx=(0, 6))
 
         tarjeta = ttk.Frame(cont, style="Card.TFrame", padding=16)
         tarjeta.pack(fill="x")
@@ -162,16 +227,43 @@ class AppCaptura:
         self._separador(tarjeta)
         self._fila(tarjeta, "4", "Carpeta de procesados", self.var_procesados,
                    self._elegir_carpeta_procesados, "procesados")
+        self._separador(tarjeta)
+        self._bloque_fecha(tarjeta, "5")
+        self._separador(tarjeta)
+        self._bloque_fotos(tarjeta, "6")
 
         self.boton = ttk.Button(cont, text="Procesar", style="Procesar.TButton",
                                 command=self._al_presionar_procesar)
         self.boton.pack(pady=16)
 
-        ttk.Label(cont, text="Resultados", style="Sub.TLabel").pack(anchor="w")
+        fila_res = ttk.Frame(cont)
+        fila_res.pack(fill="x")
+        ttk.Label(fila_res, text="Resultados",
+                  style="Sub.TLabel").pack(side="left")
+        ttk.Button(fila_res, text="Ver en grande",
+                   command=self._abrir_resultados_grande).pack(side="right")
         self.caja_log = scrolledtext.ScrolledText(
-            cont, height=10, wrap="word", state="disabled",
+            cont, height=14, wrap="word", state="disabled",
             font=("Consolas", 9), relief="solid", borderwidth=1)
-        self.caja_log.pack(fill="both", expand=True, pady=(4, 0))
+        self.caja_log.pack(fill="x", pady=(4, 0))
+
+    def _abrir_resultados_grande(self):
+        """Abre los resultados en una ventana amplia y redimensionable, para
+        verlos comodos. Es una copia de lo que hay en el area de resultados."""
+        texto = self.caja_log.get("1.0", "end")
+        ventana = tk.Toplevel(self.raiz)
+        ventana.title("Resultados")
+        ventana.geometry("900x600")
+        ventana.configure(bg=COLOR_FONDO)
+        marco = ttk.Frame(ventana, padding=12)
+        marco.pack(fill="both", expand=True)
+        ttk.Label(marco, text="Resultados del proceso",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(0, 6))
+        caja = scrolledtext.ScrolledText(marco, wrap="word",
+                                         font=("Consolas", 10))
+        caja.pack(fill="both", expand=True)
+        caja.insert("1.0", texto)
+        caja.configure(state="disabled")
 
     def _separador(self, padre):
         ttk.Separator(padre, orient="horizontal").pack(fill="x", pady=8)
@@ -226,6 +318,95 @@ class AppCaptura:
                      font=("Segoe UI", 9, "bold"), cursor="hand2")
         b.pack(side="left", padx=8)
         b.bind("<Button-1>", lambda e: self._mostrar_ayuda(clave_ayuda))
+
+    def _bloque_fecha(self, padre, num):
+        """Paso 5: selector de fecha de registro (dia / mes / año + boton Hoy)."""
+        fila = ttk.Frame(padre, style="Card.TFrame")
+        fila.pack(fill="x")
+        cab = ttk.Frame(fila, style="Card.TFrame")
+        cab.pack(fill="x")
+        ttk.Label(cab, text=f"Paso {num}", style="Paso.TLabel").pack(side="left")
+        ttk.Label(cab, text="  Fecha de registro",
+                  style="Campo.TLabel").pack(side="left")
+        self._boton_info(cab, "fecha")
+
+        linea = ttk.Frame(fila, style="Card.TFrame")
+        linea.pack(fill="x", pady=(6, 0))
+        # Tres cajitas chicas: dia, mes, año. Sencillo y sin librerias extra.
+        ttk.Label(linea, text="Dia:", background="white").pack(side="left")
+        ttk.Entry(linea, textvariable=self.var_dia, width=4).pack(
+            side="left", padx=(2, 10))
+        ttk.Label(linea, text="Mes:", background="white").pack(side="left")
+        ttk.Entry(linea, textvariable=self.var_mes, width=4).pack(
+            side="left", padx=(2, 10))
+        ttk.Label(linea, text="Año:", background="white").pack(side="left")
+        ttk.Entry(linea, textvariable=self.var_anio, width=6).pack(
+            side="left", padx=(2, 10))
+        ttk.Button(linea, text="Hoy", command=self._fecha_hoy).pack(side="left")
+
+    def _bloque_fotos(self, padre, num):
+        """Paso 6: casilla para guardar fotos + carpeta destino."""
+        fila = ttk.Frame(padre, style="Card.TFrame")
+        fila.pack(fill="x")
+        cab = ttk.Frame(fila, style="Card.TFrame")
+        cab.pack(fill="x")
+        ttk.Label(cab, text=f"Paso {num}", style="Paso.TLabel").pack(side="left")
+        ttk.Label(cab, text="  Guardar fotos",
+                  style="Campo.TLabel").pack(side="left")
+        self._boton_info(cab, "fotos")
+
+        # Casilla (activada por defecto) que habilita/deshabilita la carpeta
+        f_check = ttk.Frame(fila, style="Card.TFrame")
+        f_check.pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(f_check, text="Extraer y guardar la foto de cada PDF",
+                        style="Check.TCheckbutton",
+                        variable=self.var_guardar_fotos,
+                        command=self._actualizar_estado_fotos).pack(side="left")
+
+        # Linea de carpeta destino de las fotos
+        self.linea_fotos = ttk.Frame(fila, style="Card.TFrame")
+        self.linea_fotos.pack(fill="x", pady=(4, 0))
+        ttk.Label(self.linea_fotos, text="Carpeta de fotos:",
+                  background="white").pack(side="left")
+        self.entry_fotos = ttk.Entry(self.linea_fotos,
+                                     textvariable=self.var_carpeta_fotos)
+        self.entry_fotos.pack(side="left", fill="x", expand=True,
+                              padx=(6, 6), ipady=3)
+        self.boton_fotos = ttk.Button(self.linea_fotos, text="Elegir...",
+                                      command=self._elegir_carpeta_fotos)
+        self.boton_fotos.pack(side="left")
+
+    def _actualizar_estado_fotos(self):
+        """Habilita la carpeta de fotos solo si la casilla esta marcada."""
+        estado = "normal" if self.var_guardar_fotos.get() else "disabled"
+        self.entry_fotos.configure(state=estado)
+        self.boton_fotos.configure(state=estado)
+
+    def _elegir_carpeta_fotos(self):
+        ruta = filedialog.askdirectory(title="Carpeta donde guardar las fotos")
+        if ruta:
+            self.var_carpeta_fotos.set(ruta)
+
+    def _fecha_hoy(self):
+        """Regresa los campos de fecha al dia de hoy."""
+        hoy = dt.date.today()
+        self.var_dia.set(f"{hoy.day:02d}")
+        self.var_mes.set(f"{hoy.month:02d}")
+        self.var_anio.set(str(hoy.year))
+
+    def _leer_fecha_registro(self):
+        """
+        Convierte los tres campos en un objeto date. Devuelve (fecha, None) si
+        es valida, o (None, motivo) si el usuario puso algo invalido.
+        """
+        try:
+            d = int(self.var_dia.get())
+            m = int(self.var_mes.get())
+            a = int(self.var_anio.get())
+            return dt.date(a, m, d), None
+        except (ValueError, TypeError):
+            return None, ("La fecha de registro no es valida. Revisa que dia, "
+                          "mes y año sean numeros correctos.")
 
     def _mostrar_ayuda(self, clave):
         titulo, texto = AYUDAS[clave]
@@ -286,6 +467,15 @@ class AppCaptura:
             return
         VentanaConfig(self.raiz, al_guardar=self._recargar_config)
 
+    def _abrir_cese(self):
+        """Abre la ventana de cese de difusion. Le pasamos el Excel ya elegido
+        (si hay uno) para que el usuario no tenga que volver a seleccionarlo."""
+        if self.procesando:
+            messagebox.showinfo("Espera",
+                                "Termina el proceso actual antes de abrir el cese.")
+            return
+        VentanaCese(self.raiz, excel_inicial=self.var_excel.get().strip())
+
     def _recargar_config(self):
         """Se llama tras guardar la config: recarga la copia en memoria."""
         self.config = cfg.cargar_configuracion()
@@ -334,6 +524,23 @@ class AppCaptura:
                 "eligela en su menu.")
             return
 
+        # Validar la fecha de registro antes de arrancar
+        fecha_reg, error_fecha = self._leer_fecha_registro()
+        if error_fecha:
+            messagebox.showwarning("Fecha invalida", error_fecha)
+            return
+
+        # Si van a guardar fotos, debe haber una carpeta elegida
+        carpeta_fotos = None
+        if self.var_guardar_fotos.get():
+            carpeta_fotos = self.var_carpeta_fotos.get().strip()
+            if not carpeta_fotos:
+                messagebox.showwarning(
+                    "Falta la carpeta de fotos",
+                    "Marcaste guardar fotos pero no elegiste la carpeta "
+                    "destino. Eligela, o desmarca la casilla de fotos.")
+                return
+
         self.caja_log.configure(state="normal")
         self.caja_log.delete("1.0", "end")
         self.caja_log.configure(state="disabled")
@@ -343,15 +550,17 @@ class AppCaptura:
 
         hilo = threading.Thread(
             target=self._trabajo_en_segundo_plano,
-            args=(carpeta, excel, procesados, hojas),
+            args=(carpeta, excel, procesados, hojas, fecha_reg, carpeta_fotos),
             daemon=True)
         hilo.start()
 
-    def _trabajo_en_segundo_plano(self, carpeta, excel, procesados, hojas):
+    def _trabajo_en_segundo_plano(self, carpeta, excel, procesados, hojas,
+                                  fecha_reg, carpeta_fotos):
         try:
             resumen = motor.procesar_carpeta(
                 carpeta, excel, procesados,
-                hojas=hojas, config=self.config, log=self._log_desde_hilo)
+                hojas=hojas, config=self.config, fecha_registro=fecha_reg,
+                carpeta_fotos=carpeta_fotos, log=self._log_desde_hilo)
             self.cola_logs.put(("RESUMEN", resumen))
         except Exception as e:
             self.cola_logs.put(("LOG", f"ERROR inesperado: {e}"))
